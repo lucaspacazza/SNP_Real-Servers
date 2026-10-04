@@ -1,5 +1,6 @@
 using DataCenterAutomatorServers;
 using System.Numerics;
+using System.Text.Json;
 
 int passed = 0, failed = 0;
 void Check(string name, Action check)
@@ -21,6 +22,11 @@ GltfPrimitive<Vector3, Vector2> Triangle(int material = 0, float x = 0, bool nor
         uv ? new[] { Vector2.Zero, Vector2.UnitX, Vector2.UnitY } : null,
         new[] { 0, 2, 1 }, material);
 }
+string MaterialKey(string json)
+{
+    using var document = JsonDocument.Parse(json);
+    return GltfMaterialIdentity.Build(document.RootElement);
+}
 
 Check("Hundreds of glTF materials share one renderer without dropping material assignments", () =>
 {
@@ -41,7 +47,7 @@ Check("Positions normals and UVs retain exact local values", () =>
 });
 Check("Indices are rebased once while retaining reflected triangle winding", () =>
 {
-    var batch = GltfMeshBatcher.Build(new[] { Triangle(), Triangle() })[0];
+    var batch = GltfMeshBatcher.Build(new[] { Triangle(1), Triangle(2) })[0];
     Assert(batch.Submeshes[0].Indices.SequenceEqual(new[] { 0, 2, 1 }), "First winding changed.");
     Assert(batch.Submeshes[1].Indices.SequenceEqual(new[] { 3, 5, 4 }), "Second primitive did not retain winding and offset.");
 });
@@ -100,6 +106,35 @@ Check("Inconsistent normals and UV lengths are rejected", () =>
     Throws<ArgumentException>(() => GltfMeshBatcher.Build(new[] { Triangle() with { Uvs = new[] { Vector2.Zero } } }));
 });
 Check("Nonpositive vertex budget is rejected", () => Throws<ArgumentOutOfRangeException>(() => GltfMeshBatcher.Build(new[] { Triangle() }, maximumVertices: 0)));
+Check("Exactly matching material settings share a signature despite different export names", () =>
+{
+    Assert(MaterialKey("{\"name\":\"Metal.001\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.2,0.2,0.2,1],\"metallicFactor\":1}}")
+        == MaterialKey("{\"name\":\"Other\",\"pbrMetallicRoughness\":{\"metallicFactor\":1,\"baseColorFactor\":[0.2,0.2,0.2,1]}}"), "Exporter labels/property order blocked exact deduplication.");
+});
+Check("Distinct material colors cannot be approximated or collapsed", () =>
+{
+    Assert(MaterialKey("{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.2,0.2,0.2,1]}}")
+        != MaterialKey("{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.21,0.2,0.2,1]}}"), "Color approximation changed appearance.");
+});
+Check("Texture slots transparency and material extensions remain significant", () =>
+{
+    Assert(MaterialKey("{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}")
+        != MaterialKey("{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":1}}}"), "Different textures merged.");
+    Assert(MaterialKey("{\"alphaMode\":\"BLEND\"}") != MaterialKey("{\"alphaMode\":\"OPAQUE\"}"), "Transparency settings merged.");
+    Assert(MaterialKey("{\"extensions\":{\"KHR_materials_unlit\":{}}}") != MaterialKey("{}"), "Extensions were discarded.");
+});
+Check("Existing name-derived fallback colors are retained in material identity", () =>
+{
+    Assert(MaterialKey("{\"name\":\"Metal\"}") != MaterialKey("{\"name\":\"Panel\"}"), "Legacy fallback colors became equal.");
+    Assert(MaterialKey("{\"name\":\"Metal.001\"}") == MaterialKey("{\"name\":\"GreyTexture\"}"), "Identical fallback colors were not deduplicated.");
+});
+Check("Repeated material identity coalesces triangle slots only when explicitly requested", () =>
+{
+    var a = GltfMeshBatcher.Build(new[] { Triangle(7), Triangle(7) }, combineEqualMaterialSlots: true)[0];
+    Assert(a.Submeshes.Length == 1 && a.Submeshes[0].Indices.SequenceEqual(new[] { 0, 2, 1, 3, 5, 4 }), "Exact material slot batching failed.");
+    var b = GltfMeshBatcher.Build(new[] { Triangle(7), Triangle(7) })[0];
+    Assert(b.Submeshes.Length == 2, "Default path changed material draw order.");
+});
 
 Console.WriteLine($"Visual batching: {passed}/{passed + failed} passed.");
 return failed == 0 ? 0 : 1;

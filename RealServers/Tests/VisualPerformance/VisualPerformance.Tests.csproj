@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../DataCenterAutomatorServers/GltfMeshBatcher.cs" Link="Production/GltfMeshBatcher.cs" />
+    <Compile Include="../../DataCenterAutomatorServers/GltfMeshBatcher*.cs" Link="Production/%(Filename)%(Extension)" />
+    <Compile Include="../../DataCenterAutomatorServers/GltfMaterialIdentity*.cs" Link="Production/%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>
