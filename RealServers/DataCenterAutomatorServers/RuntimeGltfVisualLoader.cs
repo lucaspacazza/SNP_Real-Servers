@@ -826,9 +826,9 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 			var distantRenderers = distantVisual.GetComponentsInChildren<Renderer>(includeInactive: true);
 			group = prefab.AddComponent<LODGroup>();
 			var levels = new Il2CppReferenceArray<LOD>(2);
-			// A giant datacenter should use full detail only while inspecting an
-			// individual chassis. The low-detail asset keeps the same silhouette.
-			levels[0] = new LOD(0.55f, new Il2CppReferenceArray<Renderer>(fullRenderers.ToArray()));
+			// Keep the detailed front panel visible at ordinary interaction distance.
+			// Distance LOD should take over only when the chassis is farther away.
+			levels[0] = new LOD(0.10f, new Il2CppReferenceArray<Renderer>(fullRenderers.ToArray()));
 			levels[1] = new LOD(0.001f, new Il2CppReferenceArray<Renderer>(distantRenderers.ToArray()));
 			group.SetLODs(levels);
 			group.fadeMode = LODFadeMode.None;
@@ -1601,7 +1601,15 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 			{
 				int offset = bytes.Offset + i * bytes.Stride;
 				float z = BitConverter.ToSingle(bytes.Buffer, offset + 8);
-				values[i] = new Vector3(BitConverter.ToSingle(bytes.Buffer, offset), BitConverter.ToSingle(bytes.Buffer, offset + 4), invertZ ? -z : z);
+				// Generated Unity vector constructors call il2cpp_runtime_invoke.
+				// Fill their blittable fields directly: millions of import values
+				// must not cross the native boundary merely to store three floats.
+				values[i] = new Vector3
+				{
+					x = BitConverter.ToSingle(bytes.Buffer, offset),
+					y = BitConverter.ToSingle(bytes.Buffer, offset + 4),
+					z = invertZ ? -z : z
+				};
 			}
 			return values;
 		}
@@ -1620,7 +1628,7 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 				// glTF's UV origin is the upper-left corner. Unity's loaded texture
 				// samples with the opposite vertical origin.
 				// Flip V once here so front-panel text and drive labels stay upright.
-				values[i] = new Vector2(u, 1f - v);
+				values[i] = new Vector2 { x = u, y = 1f - v };
 			}
 			return values;
 		}
@@ -1775,30 +1783,21 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 		private static Il2CppStructArray<Vector3> ToIl2Cpp(Vector3[] values)
 		{
 			Il2CppStructArray<Vector3> array = new Il2CppStructArray<Vector3>(values.Length);
-			for (int i = 0; i < values.Length; i++)
-			{
-				array[i] = values[i];
-			}
+			values.AsSpan().CopyTo(array.AsSpan());
 			return array;
 		}
 
 		private static Il2CppStructArray<Vector2> ToIl2Cpp(Vector2[] values)
 		{
 			Il2CppStructArray<Vector2> array = new Il2CppStructArray<Vector2>(values.Length);
-			for (int i = 0; i < values.Length; i++)
-			{
-				array[i] = values[i];
-			}
+			values.AsSpan().CopyTo(array.AsSpan());
 			return array;
 		}
 
 		private static Il2CppStructArray<int> ToIl2Cpp(int[] values)
 		{
 			Il2CppStructArray<int> array = new Il2CppStructArray<int>(values.Length);
-			for (int i = 0; i < values.Length; i++)
-			{
-				array[i] = values[i];
-			}
+			values.AsSpan().CopyTo(array.AsSpan());
 			return array;
 		}
 

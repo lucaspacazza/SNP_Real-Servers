@@ -1,34 +1,24 @@
-# External visual assets
+# Runtime visual assets
 
-The public repository contains code and an asset manifest. It does not include
-3D models, Blender projects, textures, icons, previews, or other personal asset
-files.
+This asset pack includes the four server visuals used by the shop: Dell
+PowerEdge R440, PowerEdge R760, PowerEdge XE8640 and the Lenovo rack server
+whose shop label is **ThinkSystem SR630 V3**.
 
-RealServers can run with the game's original server chassis. If a custom GLB is
-missing, the visual loader logs a warning and retains the original chassis. The
-four Dell/Lenovo catalog entries, server specifications, and variant identity
-records are handled by the code. Installing this repository alone does not provide
-their custom visual models.
+`runtime-files.json` lists exactly **ten runtime files**: four main GLBs, their
+four distance LOD GLBs, and two shop icons. The supplied icons belong to the
+R440 and R760; the other models retain the game's shop icon until their own
+icons are provided.
 
-To install your own compatible runtime asset pack, pass the folder containing its
-`Assets` directory to the installer:
+The runtime paths are grouped under `Manufacturers/<manufacturer>/<model>/`.
+The installer copies the manifest's files to `Mods/RealServers/Assets` and
+validates their hashes. Blender projects, 3DS source files, previews, debug
+assets and unrelated models are outside this public pack.
 
-```powershell
-.\RealServers\Install.ps1 -GameDir $env:SNP_DATACENTER_DIR -AssetSource 'C:\path\to\external\RealServers'
-```
+The Lenovo asset path ends in
+`ThinkSystem_SR650_V3/Models/lenovo_rack_sr250.glb`, while its shop label is
+ThinkSystem SR630 V3. Those names differ; the filename alone does not verify
+which Lenovo chassis the mesh represents. Keep the manifest's exact paths.
 
-The installer copies only the nine paths listed in `runtime-files.json`: four
-main GLBs, their four distance LOD GLBs, and one shop icon. It validates all files
-before installing and does not recursively copy the source folder. Without
-`-AssetSource`, it installs the DLL and leaves any existing visual assets in the
-game folder in place.
-
-The Lenovo shop label is **ThinkSystem SR630 V3**, while its configured asset path
-ends in `ThinkSystem_SR650_V3/Models/lenovo_rack_sr250.glb`. These names differ;
-the path does not verify which Lenovo chassis the mesh represents. Keep the
-manifest's exact paths when supplying a compatible pack.
-
-Asset paths are also declared by each server specification in
-`../DataCenterAutomatorServers/Manufacturers/`. Use only assets you have permission
-to use and redistribute. This manifest documents expected paths; it does not
-grant rights to any asset.
+If a runtime GLB is missing, the visual loader retains the game's original
+chassis and logs the missing file. The distance LODs preserve the model's
+silhouette while reducing geometry shown from farther away.

@@ -72,8 +72,12 @@ internal sealed class RuntimeVariantRegistry
     public int? GetSavedRackPositionUid(string? serverId, string? looseId)
     {
         ServerIdentityRecord? saved = _store.FindSaved(serverId, looseId);
-        return saved == null ? null : (saved.RackPositionUid > 0 ? saved.RackPositionUid : -1);
+        return saved == null || saved.RackPositionUid == ServerIdentityRecord.UnknownRackPositionUid
+            ? null : saved.RackPositionUid;
     }
+
+    public bool HasUnknownSavedRackLocation(string? serverId, string? looseId) =>
+        _store.FindSaved(serverId, looseId)?.RackPositionUid == 0;
 
     // Slots describe location, never ownership. Keep the APIs for old callers.
     public ServerVariantSpec? GetByRackPositionUid(int rackPositionUid) => null;

@@ -448,6 +448,13 @@ public sealed class DataCenterAutomatorServersMod : MelonMod
 		}
 	}
 
+	internal static void TryPrepareLoadedServerIdentityFromPatch(object? instance, object? serverSaveData)
+	{
+		if (instance == null || serverSaveData == null) return;
+		try { ModHolder.Instance?._injector?.PrepareLoadedServerIdentity(instance, serverSaveData); }
+		catch (Exception error) { Log.Error("Could not prepare the authoritative saved server identity.", error); }
+	}
+
 	internal static void TryRestoreLoadedServerRackFromPatch(string source, object? instance, object? serverSaveData)
 	{
 		if (instance == null || serverSaveData == null)

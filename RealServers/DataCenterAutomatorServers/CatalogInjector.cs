@@ -73,6 +73,7 @@ internal sealed class CatalogInjector
 	private readonly HashSet<object> _serversBeingRepaired = new HashSet<object>(ReferenceEqualityComparer.Instance);
 
 	private readonly HashSet<object> _knownModdedServers = new HashSet<object>(ReferenceEqualityComparer.Instance);
+	private readonly HashSet<object> _preparedPhysicalServers = new HashSet<object>(ReferenceEqualityComparer.Instance);
 
 	private readonly HashSet<object> _pendingSceneConfiguredServers = new HashSet<object>(ReferenceEqualityComparer.Instance);
 
@@ -107,9 +108,8 @@ internal sealed class CatalogInjector
 
 	private Texture2D _lenovoConfigurationLogo;
 
-	private Texture2D _dellR440ShopIcon;
-
-	private Sprite _dellR440ShopIconSprite;
+	private readonly Dictionary<string, Texture2D> _shopIconTextures = new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
+	private readonly Dictionary<string, Sprite> _shopIconSprites = new Dictionary<string, Sprite>(StringComparer.OrdinalIgnoreCase);
 
 	private Font _lenovoConfigurationFont;
 
@@ -147,6 +147,8 @@ internal sealed class CatalogInjector
 	private DateTime _pendingRackRepairUntil = DateTime.MinValue;
 	private int _nextConfigurationPanelRefreshFrame;
 	private readonly Dictionary<object, string> _loadedLooseIdsByServer = new Dictionary<object, string>(ReferenceEqualityComparer.Instance);
+	private readonly Dictionary<object, string> _loadedSavedServerIds = new Dictionary<object, string>(ReferenceEqualityComparer.Instance);
+	private readonly Dictionary<object, float[]> _pendingLegacyRackPoses = new Dictionary<object, float[]>(ReferenceEqualityComparer.Instance);
 
 	public bool HasRegisteredVariants => _registeredIds.Count == ServerCatalog.ShopVariants.Length;
 
@@ -161,10 +163,13 @@ internal sealed class CatalogInjector
 		_pendingInsertionSpecs.Clear();
 		_serversBeingRepaired.Clear();
 		_knownModdedServers.Clear();
+		_preparedPhysicalServers.Clear();
 		_pendingSceneConfiguredServers.Clear();
 		_repairedPersistedServerIds.Clear();
 		_loadedServersById.Clear();
 		_loadedLooseIdsByServer.Clear();
+		_loadedSavedServerIds.Clear();
+		_pendingLegacyRackPoses.Clear();
 		_loadedCablesWithModdedEndpoints.Clear();
 		_pendingLoadedCableRedrawIds.Clear();
 		_manualRackMountsByServer.Clear();
@@ -200,6 +205,7 @@ internal sealed class CatalogInjector
 		_persistenceLoading = true;
 		ResetRuntimeAttemptState();
 		_variantRegistry.SelectSave(rawSaveName, saveFilePath);
+		Log.Info("Selected RealServers save identity scope: '" + rawSaveName + "', knownModels=" + _variantRegistry.Count.ToString(CultureInfo.InvariantCulture) + ".");
 	}
 
 	public ServerIdentityRecord[] CapturePersistenceSnapshot()
@@ -230,10 +236,11 @@ internal sealed class CatalogInjector
 			EnsureUniqueServerIdentity(server, spec, "save-snapshot");
 			string looseId = EnsureLooseIdentity(server);
 			string serverId = ReadServerId(server) ?? string.Empty;
-			int rackUid = ReadRestorableRackUid(server);
+			int rackUid = PrepareNativeSnapshotRackUid(server);
 			_variantRegistry.RecordIdentity(serverId, looseId, rackUid, spec);
 			records.Add(new ServerIdentityRecord(serverId, looseId, rackUid, spec.VariantId));
 		}
+		Log.Info("Captured RealServers save identities: models=" + records.Count.ToString(CultureInfo.InvariantCulture) + ", mounted=" + records.Count(record => record.RackPositionUid > 0).ToString(CultureInfo.InvariantCulture) + ".");
 		return records.ToArray();
 	}
 
@@ -251,6 +258,7 @@ internal sealed class CatalogInjector
 			_rackPositionRepairIndex = CreateRackPositionIndex();
 			RepairPersistedSceneVariants("save-load-complete");
 			RepairLoadedRackState("save-load-complete", force: false);
+			RepairLegacyExactRackMounts();
 			_pendingRackRepairUntil = DateTime.UtcNow.AddSeconds(5);
 		}
 		finally
@@ -340,6 +348,23 @@ internal sealed class CatalogInjector
 		return CanRestoreServerRack(server, rackUid) ? rackUid : -1;
 	}
 
+	private int PrepareNativeSnapshotRackUid(object server)
+	{
+		// A manual mount is an explicit player-selected slot, not a proximity
+		// guess. Publish its registered native reservation before serialization.
+		if (_manualRackMountsByServer.TryGetValue(server, out ManualRackMount mount)
+			&& IsTrackedManualRackMountStillValid(server, mount))
+		{
+			if (!TryEnsureNativeRackPositionUid(mount.RackPosition, out int uid))
+				throw new InvalidOperationException("Cannot save an unregistered manual rack reservation.");
+			ReflectionUtil.WriteMember(server, uid, "rackPositionUID", "RackPositionUID");
+			ReflectionUtil.WriteMember(server, false, "isOnTrolley", "IsOnTrolley");
+			EnsureRackPositionOccupied(mount.Rack, mount.RackPosition, Math.Max(1, mount.Spec.RackUnits));
+			return uid;
+		}
+		return ReadRestorableRackUid(server);
+	}
+
 	private static bool CanRestoreServerRack(object server, int rackUid)
 	{
 		bool inHands = ReflectionUtil.ReadMember(server, "objectInHands", "ObjectInHands") is bool held && held;
@@ -350,14 +375,14 @@ internal sealed class CatalogInjector
 	private int RackUidDuringLoad(object server, int nativeRackUid)
 	{
 		return _persistenceLoading
-			? _variantRegistry.GetSavedRackPositionUid(ReadServerId(server), ReadLooseIdentity(server)) ?? nativeRackUid
+			? _variantRegistry.GetSavedRackPositionUid(ReadSavedSourceServerId(server), ReadLooseIdentity(server)) ?? nativeRackUid
 			: nativeRackUid;
 	}
 
 	private void ClearStaleLoadedRackState(object server)
 	{
 		if (!_persistenceLoading) return;
-		int? savedRackUid = _variantRegistry.GetSavedRackPositionUid(ReadServerId(server), ReadLooseIdentity(server));
+		int? savedRackUid = _variantRegistry.GetSavedRackPositionUid(ReadSavedSourceServerId(server), ReadLooseIdentity(server));
 		if (savedRackUid.HasValue && savedRackUid.Value <= 0)
 		{
 			// Our saved snapshot says this individual object was loose, in hands,
@@ -914,6 +939,8 @@ internal sealed class CatalogInjector
 		{
 			RepairLoadedRackState(source + ":pending-loaded-racks");
 		}
+		if (_pendingLegacyRackPoses.Count > 0 && DateTime.UtcNow <= _pendingRackRepairUntil)
+			RepairLegacyExactRackMounts();
 	}
 
 	private void RepairPersistedSceneVariants(string source)
@@ -1146,7 +1173,7 @@ internal sealed class CatalogInjector
 		{
 			return;
 		}
-		if (_knownModdedServers.Contains(server))
+		if (IsPhysicalServerPrepared(server))
 		{
 			// Native Start/OnEnable may re-enable carrier geometry after our initial
 			// configuration. Preserve that repair without reimporting the model or
@@ -1202,7 +1229,7 @@ internal sealed class CatalogInjector
 			}
 			return;
 		}
-		bool alreadyPrepared = _knownModdedServers.Contains(server) || FindLenovoMarker(server, "PowerButton") != null;
+		bool alreadyPrepared = IsPhysicalServerPrepared(server);
 		int item;
 		int item2;
 		int item3;
@@ -1242,6 +1269,11 @@ internal sealed class CatalogInjector
 		}
 		int rackPositionUid = ToInt(ReflectionUtil.ReadMember(serverSaveData, "rackPositionUID", "RackPositionUID", "rackPositionUid", "RackPositionUid"));
 		RecoverLoadedServerVariantIdentity(server, serverSaveData, rackPositionUid, source);
+		string savedId = ReadSavedSourceServerId(server, serverSaveData);
+		if (rackPositionUid <= 0 && _variantRegistry.HasUnknownSavedRackLocation(savedId, ReadLooseIdentity(server))
+			&& ReflectionUtil.ReadMember(serverSaveData, "position", "Position") is Vector3 savedPosition
+			&& ReflectionUtil.ReadMember(serverSaveData, "rotation", "Rotation") is Quaternion savedRotation)
+			_pendingLegacyRackPoses[server] = Pose(savedPosition, savedRotation);
 		rackPositionUid = RackUidDuringLoad(server, rackPositionUid);
 		ClearStaleLoadedRackState(server);
 		if (ResolveExactOwnedSpec(server) == null || !CanRestoreServerRack(server, rackPositionUid)) return;
@@ -1254,7 +1286,7 @@ internal sealed class CatalogInjector
 
 	private void RecoverLoadedServerVariantIdentity(object server, object serverSaveData, int rackPositionUid, string source)
 	{
-		string serverId = ReadServerId(server);
+		string serverId = ReadSavedSourceServerId(server, serverSaveData);
 		ServerVariantSpec spec = _variantRegistry.GetByLooseId(ReadLooseIdentity(server)) ?? _variantRegistry.Get(serverId);
 		if (spec == null)
 		{
@@ -1262,6 +1294,77 @@ internal sealed class CatalogInjector
 		}
 		_pendingSpecsByServer[server] = spec;
 		RecordServerIdentity(server, spec);
+	}
+
+	public void PrepareLoadedServerIdentity(object instance, object data)
+	{
+		Type serverType = ReflectionUtil.FindType("Server");
+		object server = serverType == null ? null : ReflectionUtil.TryCastIl2CppObject(instance, serverType);
+		if (server == null || data == null) return;
+		string savedId = ReflectionUtil.ReadMember(data, "serverID", "ServerID", "serverId")?.ToString();
+		if (IsSpecificServerId(savedId)) _loadedSavedServerIds[server] = savedId;
+		ServerVariantSpec spec = _variantRegistry.Get(savedId);
+		if (spec == null) return;
+		_pendingSpecsByServer[server] = spec;
+		ConfigureServer(server, spec);
+	}
+
+	private string ReadSavedSourceServerId(object server, object data = null)
+	{
+		if (_loadedSavedServerIds.TryGetValue(server, out string cached)) return cached;
+		string saved = data == null ? null : ReflectionUtil.ReadMember(data, "serverID", "ServerID", "serverId")?.ToString();
+		if (IsSpecificServerId(saved)) { _loadedSavedServerIds[server] = saved; return saved; }
+		return ReadServerId(server);
+	}
+
+	private static float[] Pose(Vector3 position, Quaternion rotation) =>
+		new[] { position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w };
+
+	private void RepairLegacyExactRackMounts()
+	{
+		if (_pendingLegacyRackPoses.Count == 0) return;
+		Type slotType = ReflectionUtil.FindType("RackPosition");
+		if (slotType == null) return;
+		var slots = new List<object>();
+		var poses = new List<float[]>();
+		foreach (object slot in FindUnityObjectsOfTypeAllDirect(slotType))
+		{
+			GameObject gameObject = ResolveGameObject(slot);
+			if (gameObject == null || !gameObject.scene.IsValid() || !gameObject.activeInHierarchy) continue;
+			slots.Add(slot);
+			poses.Add(Pose(gameObject.transform.position, gameObject.transform.rotation));
+		}
+		var index = new ExactRackPoseIndex(poses);
+		int restored = 0;
+		foreach (var pending in _pendingLegacyRackPoses.ToArray())
+		{
+			object server = pending.Key;
+			ServerVariantSpec spec = ResolveExactOwnedSpec(server);
+			if (spec == null || ResolveGameObject(server) == null
+				|| ReflectionUtil.ReadMember(server, "objectInHands", "ObjectInHands") is bool holding && holding
+				|| ReflectionUtil.ReadMember(server, "isOnTrolley", "IsOnTrolley") is bool trolley && trolley)
+			{ _pendingLegacyRackPoses.Remove(server); continue; }
+			int match = index.FindUnique(pending.Value, candidate =>
+			{
+				object slot = slots[candidate];
+				object rack = ReflectionUtil.ReadMember(slot, "rack", "Rack");
+				int position = ToInt(ReflectionUtil.ReadMember(slot, "positionIndex", "PositionIndex"));
+				return rack != null && IsManualRackRangeAvailable(rack, position, spec.RackUnits)
+					&& IsRackPositionAvailableForManualMount(rack, position, spec.RackUnits);
+			});
+			if (match < 0 || !TryEnsureNativeRackPositionUid(slots[match], out int uid)) continue;
+			ReflectionUtil.WriteMember(server, slots[match], "currentRackPosition", "CurrentRackPosition");
+			ReflectionUtil.WriteMember(server, uid, "rackPositionUID", "RackPositionUID");
+			ReflectionUtil.InvokeMethod(server, "RemoveRigidbody");
+			RestoreLenovoRackMountState(server, slots[match], "legacy-exact-saved-pose");
+			RuntimeGltfVisualLoader.ApplyVisualIfAvailable(server, spec, hideOriginalRenderers: true);
+			SetRootPickupColliderEnabled(server, enabled: true);
+			RecordServerIdentity(server, spec);
+			_pendingLegacyRackPoses.Remove(server);
+			restored++;
+		}
+		Log.Info("Exact legacy rack recovery: restored=" + restored.ToString(CultureInfo.InvariantCulture)
+			+ ", pending=" + _pendingLegacyRackPoses.Count.ToString(CultureInfo.InvariantCulture) + ".");
 	}
 
 	private static bool PersistedServerMatchesDellCarrierSpec(ServerVariantSpec spec, string? serverId, int savedServerType)
@@ -1494,11 +1597,24 @@ internal sealed class CatalogInjector
 		int num2 = liveControls.ChangedPortCount;
 		EnsureUniqueServerIdentity(server, spec, source);
 		RecordServerIdentity(server, spec);
+		// Identity restoration can recognize a stock carrier before any custom
+		// geometry, physical dimensions or port layout has been applied. Publish
+		// readiness only after the complete physical configuration finishes. A
+		// missing optional GLB legitimately retains the configured native chassis.
+		MarkPhysicalServerPrepared(server);
 		if (num3 > 0 || num2 > 0 || visualChanged || logWhenUnchanged)
 		{
 			Log.Info($"Configured server {spec.VariantDisplayName} from {source}: serverChanged={num3 > 0}, visualChanged={visualChanged}, ports={num}, changedPorts={num2}, link={spec.ConnectorHint}/{spec.NetworkSpeedGbps.ToString(CultureInfo.InvariantCulture)}G, fiberLanes={spec.FiberLaneCount}.");
 		}
 		return (ServerCount: 1, PortCount: num, ChangedServerCount: num3, ChangedPortCount: num2);
+	}
+
+	private bool IsPhysicalServerPrepared(object server) => IsPhysicalServerPreparedIn(_preparedPhysicalServers, server);
+	private void MarkPhysicalServerPrepared(object server) => MarkPhysicalServerPreparedIn(_preparedPhysicalServers, server);
+	private static bool IsPhysicalServerPreparedIn(HashSet<object> prepared, object server) => server != null && prepared.Contains(server);
+	private static void MarkPhysicalServerPreparedIn(HashSet<object> prepared, object server)
+	{
+		if (server != null) prepared.Add(server);
 	}
 
 	private static void EnsureComputerAppIdentity(object server, ServerVariantSpec spec)
@@ -1763,6 +1879,13 @@ internal sealed class CatalogInjector
 		// The stock RackPosition coroutine uses the prefab's 3U shape before it
 		// reaches ServerInsertedInRack. Lenovo is a logical Yellow server for
 		// workload compatibility, but its physical rack contract is 1U.
+		// The coroutine also assigns/registers the slot's native UID. Our custom
+		// animation must complete that same step before dropping the held item.
+		if (!TryEnsureNativeRackPositionUid(rackPosition, out int nativeRackUid))
+		{
+			Log.Warning("Could not register the selected native rack slot; the server remains in the player's hands.");
+			return false;
+		}
 		ConfigureServer(server, spec);
 		SetPlayerHandProfile(server, spec, source);
 		if (!ReflectionUtil.InvokeMethod(server, "DropObject"))
@@ -1777,7 +1900,9 @@ internal sealed class CatalogInjector
 		// front of the exact rack slot, then slide straight inward like a drawer.
 		Vector3 drawerStartPosition = targetPosition - targetRotation * Vector3.forward * 0.48f;
 		ReflectionUtil.WriteMember(server, rackPosition, "currentRackPosition", "CurrentRackPosition");
-		ReflectionUtil.WriteMember(server, ToInt(ReflectionUtil.ReadMember(rackPosition, "rackPosGlobalUID", "RackPosGlobalUID")), "rackPositionUID", "RackPositionUID");
+		ReflectionUtil.WriteMember(server, nativeRackUid, "rackPositionUID", "RackPositionUID");
+		ReflectionUtil.WriteMember(server, false, "objectInHands", "ObjectInHands");
+		ReflectionUtil.WriteMember(server, false, "isOnTrolley", "IsOnTrolley");
 		ManualRackFormFactor.ApplyToServer(server, spec);
 		EnsureUniqueServerIdentity(server, spec, source);
 		// The Yellow 3U carrier is vertically offset while outside a rack. Refresh
@@ -1879,6 +2004,33 @@ internal sealed class CatalogInjector
 			RecordServerIdentity(server, spec);
 		}
 		Log.Info("Restored modded " + (spec?.RackUnits ?? 1).ToString(CultureInfo.InvariantCulture) + "U rack mount state from " + source + ": rackPositionUid=" + ToInt(ReflectionUtil.ReadMember(rackPosition, "rackPosGlobalUID", "RackPosGlobalUID")).ToString(CultureInfo.InvariantCulture) + ".");
+	}
+
+	private static bool TryEnsureNativeRackPositionUid(object rackPosition, out int uid)
+	{
+		uid = ToInt(ReflectionUtil.ReadMember(rackPosition, "rackPosGlobalUID", "RackPosGlobalUID"));
+		if (uid > 0) return true;
+		Type managerType = ReflectionUtil.FindType("MainGameManager");
+		object manager = managerType == null ? null : ReflectionUtil.ReadStaticMember(managerType, "instance", "Instance");
+		Type positionType = ReflectionUtil.FindType("RackPosition");
+		if (manager == null || positionType == null || !(ReflectionUtil.ReadMember(manager, "lastUsedRackPositionGlobalUID") is int)) return false;
+		MethodInfo lookup = positionType.GetMethod("GetByUID", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+		if (lookup == null) return false;
+		try
+		{
+			uid = NativeRackUidAllocator.Reserve(
+				() => ToInt(ReflectionUtil.ReadMember(manager, "lastUsedRackPositionGlobalUID")),
+				value => { if (!ReflectionUtil.WriteMember(manager, value, "lastUsedRackPositionGlobalUID")) throw new InvalidOperationException("Could not update the native rack UID counter."); },
+				value => lookup.Invoke(null, new object[] { value }) != null,
+				value => { if (!ReflectionUtil.InvokeMethod(rackPosition, "SetUID", value)) throw new InvalidOperationException("Native rack slot registration failed."); },
+				() => ToInt(ReflectionUtil.ReadMember(rackPosition, "rackPosGlobalUID", "RackPosGlobalUID")));
+			return uid > 0;
+		}
+		catch (Exception error)
+		{
+			Log.Error("Could not allocate the native rack reservation.", error);
+			return false;
+		}
 	}
 
 	private sealed class ManualRackMount
@@ -2315,12 +2467,12 @@ internal sealed class CatalogInjector
 		object usedSlots = ReflectionUtil.ReadMember(rack, "isPositionUsed", "IsPositionUsed");
 		int slotCount = ReflectionUtil.GetCollectionCount(usedSlots);
 		int units = Math.Max(1, sizeInU);
-		bool missing = slotCount <= 0;
-		for (int offset = 0; !missing && offset < units && index + offset < slotCount; offset++)
-		{
-			missing = ToInt(ReflectionUtil.GetIndexedItem(usedSlots, index + offset)) == 0;
-		}
-		if (!missing)
+		int uid = ToInt(ReflectionUtil.ReadMember(rackPosition, "rackPosGlobalUID", "RackPosGlobalUID"));
+		if (index < 0 || (long)index + units > slotCount) return false;
+		var reservation = new int[units];
+		for (int offset = 0; offset < units; offset++)
+			reservation[offset] = ToInt(ReflectionUtil.GetIndexedItem(usedSlots, index + offset));
+		if (!NativeRackUidAllocator.ShouldMark(uid, reservation, 0, units))
 		{
 			return false;
 		}
@@ -4491,22 +4643,25 @@ internal sealed class CatalogInjector
 
 	private void ApplyShopItemIcon(object shopItem, object shopItemGameObject, ServerVariantSpec spec)
 	{
-		if (!string.Equals(spec.FamilyKey, "dell_r440_lenovo_carrier", StringComparison.OrdinalIgnoreCase))
+		string iconPath = ServerShopIcons.GetRelativePath(spec.VariantId);
+		if (iconPath == null)
 		{
 			return;
 		}
-		Texture2D texture = GetDellR440ShopIcon();
+		Texture2D texture = GetServerShopIcon(iconPath);
 		if (texture == null)
 		{
 			return;
 		}
+		if (!_shopIconSprites.TryGetValue(iconPath, out Sprite sprite) || sprite == null)
+			_shopIconSprites[iconPath] = sprite = Sprite.Create(texture, new Rect(0f, 0f, texture.width, texture.height), new Vector2(0.5f, 0.5f));
 		GameObject imageObject = ResolveGameObject(ReflectionUtil.ReadMember(shopItem, "itemIcon", "ItemIcon", "imgItem", "itemImage", "imageItem", "icon", "Icon"));
 		if (imageObject != null)
 		{
 			Image image = imageObject.GetComponent<Image>();
 			if (image != null)
 			{
-				image.sprite = _dellR440ShopIconSprite ??= Sprite.Create(texture, new Rect(0f, 0f, texture.width, texture.height), new Vector2(0.5f, 0.5f));
+				image.sprite = sprite;
 				image.preserveAspect = true;
 				return;
 			}
@@ -4522,22 +4677,21 @@ internal sealed class CatalogInjector
 			string name = image.name ?? string.Empty;
 			if (name.Contains("icon", StringComparison.OrdinalIgnoreCase) || name.Contains("image", StringComparison.OrdinalIgnoreCase) || name.Contains("preview", StringComparison.OrdinalIgnoreCase))
 			{
-				image.sprite = _dellR440ShopIconSprite ??= Sprite.Create(texture, new Rect(0f, 0f, texture.width, texture.height), new Vector2(0.5f, 0.5f));
+				image.sprite = sprite;
 				image.preserveAspect = true;
 				return;
 			}
 		}
 	}
 
-	private Texture2D GetDellR440ShopIcon()
+	private Texture2D GetServerShopIcon(string relativeIcon)
 	{
-		if (_dellR440ShopIcon != null)
+		if (_shopIconTextures.TryGetValue(relativeIcon, out Texture2D cached) && cached != null)
 		{
-			return _dellR440ShopIcon;
+			return cached;
 		}
 		string assemblyPath = typeof(CatalogInjector).Assembly.Location;
 		string modDirectory = string.IsNullOrWhiteSpace(assemblyPath) ? string.Empty : Path.GetDirectoryName(assemblyPath) ?? string.Empty;
-		string relativeIcon = Path.Combine("Assets", "Manufacturers", "Dell", "PowerEdge_R440", "icon.png");
 		string[] candidates =
 		{
 			Path.Combine(modDirectory, "RealServers", relativeIcon),
@@ -4547,22 +4701,22 @@ internal sealed class CatalogInjector
 		string path = candidates.FirstOrDefault(File.Exists) ?? candidates[0];
 		if (!File.Exists(path))
 		{
-			Log.Warning("Dell R440 shop icon was not found: " + path);
+			Log.Warning("Server shop icon was not found: " + path);
 			return null;
 		}
 		try
 		{
 			Texture2D texture = new Texture2D(2, 2);
-			if (ImageConversion.LoadImage(texture, File.ReadAllBytes(path)))
+			if (ImageConversion.LoadImage(texture, File.ReadAllBytes(path), true))
 			{
-				texture.name = "RealServers_DellR440ShopIcon";
-				_dellR440ShopIcon = texture;
+				texture.name = "RealServers_ShopIcon_" + relativeIcon;
+				_shopIconTextures[relativeIcon] = texture;
 				return texture;
 			}
 		}
 		catch (Exception exception)
 		{
-			Log.Warning("Could not load Dell R440 shop icon: " + exception.Message);
+			Log.Warning("Could not load server shop icon: " + exception.Message);
 		}
 		return null;
 	}
@@ -5300,9 +5454,21 @@ internal sealed class CatalogInjector
 		{
 			if (item != null)
 			{
-				yield return item;
+				object typed = CastResourceObject(item, type);
+				if (typed != null) yield return typed;
 			}
 		}
+	}
+
+	private static object CastResourceObject(object item, Type requestedType)
+	{
+		if (item == null || requestedType == null) return null;
+		// Resources' nongeneric API returns Unity.Object wrappers. The interop
+		// pool does not discover their native derived type, and TryCast creates
+		// a new typed wrapper without updating that pool. Every scan therefore
+		// needs its own explicit cast before reflection reads Server/rack fields.
+		object typed = ReflectionUtil.TryCastIl2CppObject(item, requestedType);
+		return typed != null && requestedType.IsInstanceOfType(typed) ? typed : null;
 	}
 
 	private static bool IsUnityComponentOrGameObject(object value)

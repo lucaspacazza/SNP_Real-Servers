@@ -489,6 +489,7 @@ internal static class PatchRegistry
 			return 0;
 		}
 		MethodInfo methodInfo = AccessTools.Method(typeof(PatchRegistry), "ServerInsertedPostfix", (Type[])null, (Type[])null);
+		MethodInfo prefix = AccessTools.Method(typeof(PatchRegistry), nameof(ServerInsertedPrefix));
 		if (methodInfo == null)
 		{
 			Log.Error("Internal ServerInserted postfix method was not found.");
@@ -503,7 +504,7 @@ internal static class PatchRegistry
 			{
 				try
 				{
-					harmony.Patch((MethodBase)item, (HarmonyMethod)null, new HarmonyMethod(methodInfo), (HarmonyMethod)null, (HarmonyMethod)null, (HarmonyMethod)null);
+					harmony.Patch((MethodBase)item, new HarmonyMethod(prefix), new HarmonyMethod(methodInfo), (HarmonyMethod)null, (HarmonyMethod)null, (HarmonyMethod)null);
 					num++;
 					Log.Info($"Patched {type.FullName}.{item.Name} for inserted server finalization.");
 				}
@@ -515,6 +516,9 @@ internal static class PatchRegistry
 		}
 		return num;
 	}
+
+	public static void ServerInsertedPrefix(object? __instance, object? serverSaveData) =>
+		DataCenterAutomatorServersMod.TryPrepareLoadedServerIdentityFromPatch(__instance, serverSaveData);
 
 	public static void ServerInsertedPostfix(object? __instance, MethodBase __originalMethod, object? serverSaveData)
 	{

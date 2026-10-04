@@ -55,8 +55,8 @@ internal sealed class ServerIdentityStore
                 && string.Equals(Path.GetFileNameWithoutExtension(x.Path), ScopeKey(x.Snapshot.RawSaveName) + "." + fingerprint, StringComparison.Ordinal))
             .Select(x => x.Snapshot!).ToArray();
         if (candidates.Length == 0) return;
-        ServerIdentityRecord[] first = Canonical(candidates[0].Records);
-        if (candidates.Skip(1).Any(candidate => !SameMappings(first, Canonical(candidate.Records))))
+        ServerIdentityRecord[] first = Canonical(candidates[0]);
+        if (candidates.Skip(1).Any(candidate => !SameMappings(first, Canonical(candidate))))
         {
             _warning?.Invoke("Identical save bytes have conflicting RealServers identity snapshots; restoration was skipped.");
             return;
@@ -137,7 +137,7 @@ internal sealed class ServerIdentityStore
         if (raw.Length == 0) throw new ArgumentException("A raw save name is required.", nameof(rawSaveName));
         string fingerprint = TryFingerprint(saveFilePath) ?? throw new FileNotFoundException("The native save must exist before committing its identity snapshot.", saveFilePath);
         var snapshot = new ServerIdentitySnapshot {
-            SchemaVersion = 1, RawSaveName = raw, SaveFingerprint = fingerprint,
+            SchemaVersion = 2, RawSaveName = raw, SaveFingerprint = fingerprint,
             Records = Canonical(records).ToList()
         };
         Directory.CreateDirectory(_directory);
@@ -164,7 +164,7 @@ internal sealed class ServerIdentityStore
     private void Adopt(ServerIdentitySnapshot snapshot)
     {
         ClearLiveRecords();
-        foreach (var record in Canonical(snapshot.Records)) AddRecord(record);
+        foreach (var record in Canonical(snapshot)) AddRecord(record);
         HasSnapshot = true;
         _savedByServer.Clear(); _savedByLoose.Clear();
         foreach (ServerIdentityRecord record in _records)
@@ -180,7 +180,7 @@ internal sealed class ServerIdentityStore
         try
         {
             ServerIdentitySnapshot? result = JsonSerializer.Deserialize<ServerIdentitySnapshot>(File.ReadAllBytes(path));
-            return result is { SchemaVersion: 1, Records: not null }
+            return result is { SchemaVersion: 1 or 2, Records: not null }
                 && !string.IsNullOrWhiteSpace(result.RawSaveName)
                 && result.SaveFingerprint?.Length == 64 ? result : null;
         }
@@ -211,7 +211,9 @@ internal sealed class ServerIdentityStore
         string server = IsUniqueServerIdentity(record.ServerId) ? record.ServerId.Trim() : string.Empty;
         string loose = record.LooseId?.Trim() ?? string.Empty;
         if (server.Length == 0 && loose.Length == 0) return null;
-        return new(server, loose, Math.Max(0, record.RackPositionUid), record.VariantId.Trim());
+        int rackUid = record.RackPositionUid >= ServerIdentityRecord.LooseRackPositionUid
+            ? record.RackPositionUid : ServerIdentityRecord.UnknownRackPositionUid;
+        return new(server, loose, rackUid, record.VariantId.Trim());
     }
     internal static bool IsUniqueServerIdentity(string? id)
     {
@@ -227,6 +229,11 @@ internal sealed class ServerIdentityStore
         records.Select(Normalize).Where(x => x != null).Cast<ServerIdentityRecord>().Distinct()
         .OrderBy(x => x.ServerId, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.LooseId, StringComparer.Ordinal)
         .ThenBy(x => x.RackPositionUid).ThenBy(x => x.VariantId, StringComparer.OrdinalIgnoreCase).ToArray();
+    private static ServerIdentityRecord[] Canonical(ServerIdentitySnapshot snapshot) =>
+        Canonical(snapshot.SchemaVersion == 1
+            ? snapshot.Records.Select(record => record is { RackPositionUid: <= 0 }
+                ? record with { RackPositionUid = ServerIdentityRecord.UnknownRackPositionUid } : record)
+            : snapshot.Records);
     private static bool SameMappings(ServerIdentityRecord[] left, ServerIdentityRecord[] right) =>
         left.Length == right.Length && left.Zip(right, (a, b) =>
             string.Equals(a.ServerId, b.ServerId, StringComparison.OrdinalIgnoreCase)

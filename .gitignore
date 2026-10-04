@@ -13,7 +13,7 @@
 *.mdb
 *.nupkg
 
-# Personal 3D assets and images, including runtime models
+# Private 3D source assets and images; authorized runtime files are allowlisted below
 *.3ds
 *.blend
 *.blend1
@@ -62,3 +62,24 @@
 *.zip
 __pycache__/
 *.pyc
+
+# The four shipped visual models and their distance LODs, exactly as manifested.
+# Reopen only their Models directories, then ignore every other file in them.
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_R440_LenovoCarrier/Models/
+/RealServers/Assets/Manufacturers/Dell/PowerEdge_R440_LenovoCarrier/Models/*
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_R440_LenovoCarrier/Models/PowerEdge_R440_static_game_ready.glb
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_R440_LenovoCarrier/Models/PowerEdge_R440_static_game_ready.lod.glb
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_XE8640/Models/
+/RealServers/Assets/Manufacturers/Dell/PowerEdge_XE8640/Models/*
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_XE8640/Models/PowerEdge_XE8640_runtime_compatible.glb
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_XE8640/Models/PowerEdge_XE8640_runtime_compatible.lod.glb
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_R760/Models/
+/RealServers/Assets/Manufacturers/Dell/PowerEdge_R760/Models/*
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_R760/Models/PowerEdge_R760_static_game_ready.glb
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_R760/Models/PowerEdge_R760_static_game_ready.lod.glb
+!/RealServers/Assets/Manufacturers/Lenovo/ThinkSystem_SR650_V3/Models/
+/RealServers/Assets/Manufacturers/Lenovo/ThinkSystem_SR650_V3/Models/*
+!/RealServers/Assets/Manufacturers/Lenovo/ThinkSystem_SR650_V3/Models/lenovo_rack_sr250.glb
+!/RealServers/Assets/Manufacturers/Lenovo/ThinkSystem_SR650_V3/Models/lenovo_rack_sr250.lod.glb
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_R440/icon.png
+!/RealServers/Assets/Manufacturers/Dell/PowerEdge_R760/icon.png

@@ -27,7 +27,7 @@ The custom shop has four entries:
 
 The catalog uses the game's native server interactions: rack installation, customer assignment, power, and network controls. Model identity follows durable server/object IDs rather than guessing from Green/Yellow colors or nearby rack positions. The shop cleanup in **0.2.2** removes the extra placeholder entries; the game's original server catalog remains available.
 
-An optional external asset pack provides custom Dell and Lenovo chassis, with detailed models nearby and simplified models at a distance. **This repository contains code only: 3D models, textures, icons, and other personal assets are not included.** Without those files, Real Servers keeps the original game chassis while applying its hardware profiles and identity tracking.
+**This repository includes the four runtime server models, their four distance LOD models, and the available R440 and R760 shop icons.** Detailed chassis are shown nearby and lighter models are used at a distance. Blender projects, unrelated models, and personal development files are excluded. Additional server icons can be added as they become available.
 
 ### Auto Customer DHCP
 
@@ -86,13 +86,13 @@ $gameDir = "C:\Program Files (x86)\Steam\steamapps\common\Data Center"
 
 The scripts build against that installation, back up existing mod files, copy the mod into `Mods`, and verify the copied file hashes. They never close or start the game and do not modify saves. `-WhatIf` previews the installation without copying files. Restart the game yourself to load a new DLL.
 
-Real Servers installs its DLL without models by default. If you have a separate asset pack with the layout described in [RealServers/Assets](RealServers/Assets/README.md), pass its root directory:
+Real Servers installs its DLL and the ten bundled runtime assets by default. The layout is described in [RealServers/Assets](RealServers/Assets/README.md). To use an alternative pack with that same layout, pass its root directory:
 
 ```powershell
 .\RealServers\Install.ps1 -GameDir $gameDir -AssetSource "C:\MyAssetPacks\RealServers"
 ```
 
-Only the nine runtime files listed in the asset manifest are selected. Source models and development files remain outside the public package.
+Only the ten runtime files listed in the asset manifest are selected. Source Blender projects and unrelated development files remain outside the public package.
 
 ## Save compatibility and removal
 
@@ -120,7 +120,7 @@ $env:SNP_DATACENTER_DIR = $gameDir
 dotnet run --project .\RealServers\Tests\SaveHooks\SaveHooks.Tests.csproj -c Release "-p:GameDir=$gameDir"
 ```
 
-Managed and metadata tests do not replace playing through purchase, pickup, rack installation, cabling, and save/reload in Unity. Real Servers **0.2.2** keeps the checkout and pickup hotfix and limits the custom shop to the four supported entries. Its complete native gameplay cycle still requires in-game verification.
+Managed and metadata tests do not replace playing through purchase, pickup, rack installation, cabling, and save/reload in Unity. Real Servers **0.2.5** keeps the four-entry shop, registers manual rack slots through the native UID mechanism, restores physical models independently of identity lookup, and avoids per-vertex native calls during model imports. Legacy rack recovery requires a unique exact saved pose and a free matching slot. Its complete native gameplay cycle still requires in-game verification.
 
 ## Repository layout
 
@@ -133,7 +133,7 @@ Directory.Build.props Shared local game-directory configuration
 Directory.Build.targets Local assembly validation
 ```
 
-Personal 3D assets, game/dependency binaries, compiled output, local backups, saves, crash dumps, and logs are excluded. The original development folders and installed mods remain separate from this public source package.
+Only the runtime assets listed in the manifest are included. Unrelated 3D assets, Blender projects, game/dependency binaries, compiled output, local backups, saves, crash dumps, and logs are excluded. Installed mods remain separate from this repository.
 
 Data Center and the hardware brand names belong to their respective owners. This is an independent modding project and is not affiliated with Waseku or the hardware manufacturers.
 

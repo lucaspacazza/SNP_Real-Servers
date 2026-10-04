@@ -287,6 +287,33 @@ try
         Equal<ServerVariantSpec?>(null, registry.GetByLooseId("cargo-42"));
         Equal<int?>(null, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
     });
+    Test("Invalid negative rack values remain unknown instead of asserting loose state", () => {
+        string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
+        registry.CommitSnapshot("A", file, new[] { R(rack: -9) });
+        registry.SelectSave("A", file);
+        Equal("dell_r440", registry.GetByLooseId("cargo-42")?.VariantId);
+        Equal<int?>(null, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+    });
+    Test("Null metadata records cannot discard valid schema 1 or schema 2 identities", () => {
+        foreach (int schema in new[] { 1, 2 }) {
+            string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
+            registry.CommitSnapshot("A", file, new[] { R() });
+            RewriteSnapshotSchema(Snapshot(root), schema, null!, R());
+            registry.SelectSave("A", file);
+            Equal("dell_r440", registry.GetByLooseId("cargo-42")?.VariantId);
+            Equal<int?>(125, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+        }
+    });
+    Test("Identical mounted mappings across schema versions stay recoverable for copied bytes", () => {
+        string root = Temp(), a = Save(root, "A"), b = Save(root, "B"), copy = Save(root, "Copy");
+        var registry = new RuntimeVariantRegistry(root);
+        registry.CommitSnapshot("A", a, new[] { R() }); string aSnapshot = Snapshot(root);
+        RewriteSnapshotSchema(aSnapshot, 1);
+        registry.CommitSnapshot("B", b, new[] { R() });
+        registry.SelectSave("Copy", copy);
+        Equal("dell_r440", registry.GetByLooseId("cargo-42")?.VariantId);
+        Equal<int?>(125, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+    });
     Test("New worlds and shared-byte loads suppress global legacy identities", () => {
         string root = Temp(), dir = Path.Combine(root, "UserData", "BackplaneBoostServers"); Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, "server-variants.tsv"), "Server.Green1_-42\tdell_r440\n");

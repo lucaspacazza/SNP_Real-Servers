@@ -7,6 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../DataCenterAutomatorServers/ReferenceEqualityComparer.cs" Link="ReferenceEqualityComparer.cs" />
-    <Compile Include="../../DataCenterAutomatorServers/Core/NativeReferenceIdentity.cs" Link="NativeReferenceIdentity.cs" Condition="Exists('../../DataCenterAutomatorServers/Core/NativeReferenceIdentity.cs')" />
+    <Compile Include="../../DataCenterAutomatorServers/Core/NativeReferenceIdentity*.cs" Link="%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

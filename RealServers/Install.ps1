@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $gameRoot = [IO.Path]::GetFullPath($GameDir)
+if ([string]::IsNullOrWhiteSpace($AssetSource)) { $AssetSource = $projectRoot }
 
 function Resolve-ChildPath([string] $Root, [string] $Relative) {
     if ([string]::IsNullOrWhiteSpace($Relative) -or [IO.Path]::IsPathRooted($Relative)) {

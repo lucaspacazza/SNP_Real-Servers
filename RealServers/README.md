@@ -1,4 +1,4 @@
-# Real Servers 0.2.2
+# Real Servers 0.2.5
 
 A MelonLoader mod for **Data Center by Waseku** that adds four Dell and Lenovo server entries to the shop:
 
@@ -7,7 +7,7 @@ A MelonLoader mod for **Data Center by Waseku** that adds four Dell and Lenovo s
 - Dell PowerEdge XE8640
 - Lenovo rack server (shop label: ThinkSystem SR630 V3)
 
-Each entry has its own gameplay specifications, price, and rack reservation. The mod uses the game's native purchase, pickup, rack, power, and network interactions. Version 0.2.2 removes the extra placeholder entries from the custom shop. Historical variant definitions remain available internally to restore existing saves; they are not offered as new purchases.
+Each entry has its own gameplay specifications, price, and rack reservation. The mod uses the game's native purchase, pickup, rack, power, and network interactions. Manual placement registers the exact slot using the native rack UID counter before saving. Historical variant definitions remain available internally for existing saves; the shop offers only the four models listed above.
 
 Model identity is stored separately for each native save and its revisions, using durable server and loose-object IDs. Back up `UserData/RealServers/SaveIdentities/` in the game directory together with your native saves. A stock chassis alone cannot identify a model whose saved identity has already been lost.
 
@@ -23,9 +23,9 @@ dotnet build .\RealServers\RealServers.csproj -c Release "-p:GameDir=$gameDir"
 
 The installer backs up replaced mod files and verifies their hashes. It does not close or start the game or modify saves. A new DLL loads on the next game start.
 
-## Optional visuals
+## Included visuals
 
-**The public source does not include 3D models, textures, or icons.** Without a separate compatible asset pack, servers use the game's original chassis with the mod's specifications and identity tracking. Existing installed visual assets are preserved by a DLL-only installation.
+**The repository includes four runtime models, four distance LODs, and the available R440 and R760 icons.** The installer copies these ten assets by default. Full models share cached geometry and materials; import uses managed vector decoding and bulk native buffer copies. Blender projects and unrelated models are excluded.
 
 See [Assets/README.md](Assets/README.md) for the expected file layout and the installer's `-AssetSource` option.
 
