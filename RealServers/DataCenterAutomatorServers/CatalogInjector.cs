@@ -131,6 +131,7 @@ internal sealed class CatalogInjector
 	private DateTime _lastSpawnMaintenanceAt = DateTime.MinValue;
 
 	private DateTime _lastRackStateRecoveryAt = DateTime.MinValue;
+	private ExactRackIndex<object> _rackPositionRepairIndex;
 
 	private object _pendingLenovoRackInsertionServer;
 
@@ -176,6 +177,7 @@ internal sealed class CatalogInjector
 		_pendingLenovoRackInsertionServer = null;
 		_pendingLenovoRackInsertionUntil = DateTime.MinValue;
 		_lastRackStateRecoveryAt = DateTime.MinValue;
+		_rackPositionRepairIndex = null;
 		_loggedComputerShopDiagnostics = false;
 		_loadedCableRedrawScheduled = false;
 		_lenovoPowerControlSpecsByServer.Clear();
@@ -246,12 +248,14 @@ internal sealed class CatalogInjector
 		// from the per-frame maintenance loop.
 		try
 		{
+			_rackPositionRepairIndex = CreateRackPositionIndex();
 			RepairPersistedSceneVariants("save-load-complete");
 			RepairLoadedRackState("save-load-complete", force: false);
 			_pendingRackRepairUntil = DateTime.UtcNow.AddSeconds(5);
 		}
 		finally
 		{
+			_rackPositionRepairIndex = null;
 			_persistenceLoading = false;
 		}
 	}
@@ -260,6 +264,7 @@ internal sealed class CatalogInjector
 	{
 		_persistenceLoading = false;
 		_pendingRackRepairUntil = DateTime.MinValue;
+		_rackPositionRepairIndex = null;
 	}
 
 	public void ResetPersistenceForNewWorld()
@@ -918,7 +923,7 @@ internal sealed class CatalogInjector
 		{
 			return;
 		}
-		foreach (object server in FindUnityObjectsOfTypeAll(serverType))
+		foreach (object server in FindUnityObjectsOfTypeAllDirect(serverType))
 		{
 			GameObject liveObject = ResolveGameObject(server);
 			if (!IsLiveInventory(liveObject)) continue;
@@ -1132,13 +1137,23 @@ internal sealed class CatalogInjector
 	public void TryConfigurePendingLifecycleServer(string source, object server)
 	{
 		Type type = ReflectionUtil.FindType("Server");
-		if (type == null || !type.IsInstanceOfType(server) || _serversBeingRepaired.Contains(server) || _knownModdedServers.Contains(server))
+		if (type == null || !type.IsInstanceOfType(server) || _serversBeingRepaired.Contains(server))
 		{
 			return;
 		}
 		ServerVariantSpec spec = ResolveExactOwnedSpec(server);
 		if (spec == null)
 		{
+			return;
+		}
+		if (_knownModdedServers.Contains(server))
+		{
+			// Native Start/OnEnable may re-enable carrier geometry after our initial
+			// configuration. Preserve that repair without reimporting the model or
+			// rebuilding every port, collider and rack reference a second time.
+			bool changed = ConfigureServer(server, spec);
+			RuntimeGltfVisualLoader.EnsureVisualStillApplied(server, spec);
+			if (changed) ForceServerDisplayRefresh(server);
 			return;
 		}
 		_serversBeingRepaired.Add(server);
@@ -1695,7 +1710,6 @@ internal sealed class CatalogInjector
 		UnregisterComputerAppMountedServer(server);
 		UntrackManualRackMount(server, reconcileRack: true);
 		SetRootPickupColliderEnabled(server, enabled: false);
-		ConfigureServerLiveControls(server, spec, source + ".ports", logWhenUnchanged: false);
 	}
 
 	public void TryPrepareLenovoRackInsertion(string source, object rackPosition)
@@ -1930,12 +1944,6 @@ internal sealed class CatalogInjector
 		int rackUid = ToInt(ReflectionUtil.ReadMember(server, "rackPositionUID", "RackPositionUID"));
 		rackUid = RackUidDuringLoad(server, rackUid);
 		if (!CanRestoreServerRack(server, rackUid)) return false;
-		Type rackPositionType = ReflectionUtil.FindType("RackPosition");
-		if (rackPositionType == null)
-		{
-			return false;
-		}
-		object[] rackPositions = FindUnityObjectsOfTypeAllDirect(rackPositionType).ToArray();
 		object rackPosition = ReflectionUtil.ReadMember(server, "currentRackPosition", "CurrentRackPosition");
 		GameObject currentRackPositionObject = ResolveGameObject(rackPosition);
 		if (rackPosition == null
@@ -1944,8 +1952,11 @@ internal sealed class CatalogInjector
 			|| !RuntimeOwnershipPolicy.IsMatchingRackReservation(rackUid, ToInt(ReflectionUtil.ReadMember(rackPosition, "rackPosGlobalUID", "RackPosGlobalUID")))
 			|| ReflectionUtil.ReadMember(rackPosition, "rack", "Rack") == null)
 		{
-			rackPosition = rackPositions.FirstOrDefault(candidate =>
-				ToInt(ReflectionUtil.ReadMember(candidate, "rackPosGlobalUID", "RackPosGlobalUID")) == rackUid);
+			GameObject serverObject = ResolveGameObject(server);
+			if (serverObject == null) return false;
+			ExactRackIndex<object> index = GetRackPositionRepairIndex();
+			rackPosition = FindClosestExactRackPosition(serverObject, index.GetCandidates(rackUid), out float distance);
+			if (distance > 2.25f) return false;
 		}
 		if (rackPosition == null || ReflectionUtil.ReadMember(rackPosition, "rack", "Rack") == null)
 		{
@@ -2097,7 +2108,6 @@ internal sealed class CatalogInjector
 		int positionIndex = ToInt(ReflectionUtil.ReadMember(rackPosition, "positionIndex", "PositionIndex"));
 		bool available = !checkAvailability || IsRackPositionAvailableForManualMount(rack, positionIndex, spec.RackUnits);
 		result = available;
-		Log.Info("Overrode mod rack validation: slot='" + ReflectionUtil.ReadUnityObjectName(rackPosition) + "', index=" + positionIndex.ToString(CultureInfo.InvariantCulture) + ", rackUnits=" + spec.RackUnits.ToString(CultureInfo.InvariantCulture) + ", available=" + available.ToString(CultureInfo.InvariantCulture) + ".");
 		return false;
 	}
 
@@ -2138,12 +2148,10 @@ internal sealed class CatalogInjector
 				{
 					continue;
 				}
-				int index = ToInt(ReflectionUtil.ReadMember(mount.RackPosition, "positionIndex", "PositionIndex"));
-				ReflectionUtil.InvokeMethod(rack, "MarkPositionAsUsed", index, mount.Spec.RackUnits);
-				ReflectionUtil.InvokeMethod(mount.RackPosition, "SetUsed", true);
-				ensured++;
+				if (EnsureRackPositionOccupied(rack, mount.RackPosition, mount.Spec.RackUnits)) ensured++;
 			}
-			Log.Info("Ensured manual mod rack occupancy without altering native rack state: mounts=" + ensured.ToString(CultureInfo.InvariantCulture) + ".");
+			if (ensured > 0)
+				Log.Info("Ensured manual mod rack occupancy without altering native rack state: mounts=" + ensured.ToString(CultureInfo.InvariantCulture) + ".");
 		}
 		finally
 		{
@@ -2158,74 +2166,99 @@ internal sealed class CatalogInjector
 			return;
 		}
 		_lastRackStateRecoveryAt = DateTime.UtcNow;
-		if (force)
+		ExactRackIndex<object> previousIndex = _rackPositionRepairIndex;
+		_rackPositionRepairIndex ??= CreateRackPositionIndex();
+		try
 		{
-			Type serverType = ReflectionUtil.FindType("Server");
-			if (serverType != null)
+			if (force)
 			{
-				foreach (object server in FindUnityObjectsOfTypeAllDirect(serverType))
+				Type serverType = ReflectionUtil.FindType("Server");
+				if (serverType != null)
 				{
-					GameObject serverObject = ResolveGameObject(server);
-					if (serverObject == null || !serverObject.scene.IsValid())
+					foreach (object server in FindUnityObjectsOfTypeAllDirect(serverType))
 					{
-						continue;
-					}
-					if (ResolveExactOwnedSpec(server) == null) continue;
-					object currentRackPosition = ReflectionUtil.ReadMember(server, "currentRackPosition", "CurrentRackPosition");
-					if (currentRackPosition == null)
-					{
-						int rackUid = ToInt(ReflectionUtil.ReadMember(server, "rackPositionUID", "RackPositionUID"));
-						rackUid = RackUidDuringLoad(server, rackUid);
-						if (CanRestoreServerRack(server, rackUid)) _pendingLoadedServerRackUids[server] = rackUid;
+						GameObject serverObject = ResolveGameObject(server);
+						if (serverObject == null || !serverObject.scene.IsValid()) continue;
+						if (ResolveExactOwnedSpec(server) == null) continue;
+						object currentRackPosition = ReflectionUtil.ReadMember(server, "currentRackPosition", "CurrentRackPosition");
+						if (currentRackPosition == null)
+						{
+							int rackUid = ToInt(ReflectionUtil.ReadMember(server, "rackPositionUID", "RackPositionUID"));
+							rackUid = RackUidDuringLoad(server, rackUid);
+							if (CanRestoreServerRack(server, rackUid)) _pendingLoadedServerRackUids[server] = rackUid;
+						}
 					}
 				}
 			}
-		}
-		Type rackPositionType = ReflectionUtil.FindType("RackPosition");
-		if (rackPositionType == null)
-		{
-			return;
-		}
-		object[] rackPositions = FindUnityObjectsOfTypeAllDirect(rackPositionType)
-			.Where(position =>
+			int repairedReferences = 0;
+			int repairedReservations = 0;
+			foreach (KeyValuePair<object, int> pending in _pendingLoadedServerRackUids.ToArray())
 			{
-				GameObject positionObject = ResolveGameObject(position);
-				return positionObject != null && positionObject.scene.IsValid() && ReflectionUtil.ReadMember(position, "rack", "Rack") != null;
-			})
-			.ToArray();
-		if (rackPositions.Length == 0)
-		{
-			return;
+				object server = pending.Key;
+				GameObject serverObject = ResolveGameObject(server);
+				if (serverObject == null)
+				{
+					_pendingLoadedServerRackUids.Remove(server);
+					continue;
+				}
+				object inHands = ReflectionUtil.ReadMember(server, "objectInHands", "ObjectInHands");
+				object onTrolley = ReflectionUtil.ReadMember(server, "isOnTrolley", "IsOnTrolley");
+				if ((inHands is bool held && held) || (onTrolley is bool trolley && trolley)) continue;
+				if (TryRestoreExactLoadedServerRackState(server, pending.Value, source))
+				{
+					_pendingLoadedServerRackUids.Remove(server);
+					repairedReferences++;
+					repairedReservations++;
+				}
+			}
+			if (repairedReferences > 0 || repairedReservations > 0)
+			{
+				Log.Info("Recovered loaded rack state from " + source + ": references=" + repairedReferences.ToString(CultureInfo.InvariantCulture) + ", reservations=" + repairedReservations.ToString(CultureInfo.InvariantCulture) + ".");
+			}
 		}
+		finally
+		{
+			_rackPositionRepairIndex = previousIndex;
+		}
+	}
 
-		int repairedReferences = 0;
-		int repairedReservations = 0;
-		foreach (KeyValuePair<object, int> pending in _pendingLoadedServerRackUids.ToArray())
+	private ExactRackIndex<object> GetRackPositionRepairIndex()
+	{
+		if (_rackPositionRepairIndex != null) return _rackPositionRepairIndex;
+		ExactRackIndex<object> index = CreateRackPositionIndex();
+		// Native ServerInsertedInRack load callbacks arrive before CompleteLoad.
+		// Share one bounded snapshot across those callbacks too; the late load
+		// batch gets a fresh index after every native slot has been registered.
+		if (_persistenceLoading) _rackPositionRepairIndex = index;
+		return index;
+	}
+
+	private static ExactRackIndex<object> CreateRackPositionIndex() => new ExactRackIndex<object>(
+		() => FindUnityObjectsOfTypeAllDirect(ReflectionUtil.FindType("RackPosition")),
+		position => ToInt(ReflectionUtil.ReadMember(position, "rackPosGlobalUID", "RackPosGlobalUID")),
+		position =>
 		{
-			object server = pending.Key;
-			GameObject serverObject = ResolveGameObject(server);
-			if (serverObject == null)
+			GameObject gameObject = ResolveGameObject(position);
+			return gameObject != null && gameObject.scene.IsValid() && ReflectionUtil.ReadMember(position, "rack", "Rack") != null;
+		});
+
+	private static object FindClosestExactRackPosition(GameObject serverObject, IReadOnlyList<object> candidates, out float selectedDistance)
+	{
+		selectedDistance = float.PositiveInfinity;
+		object selected = null;
+		Vector3 serverPosition = serverObject.transform.position;
+		foreach (object candidate in candidates)
+		{
+			GameObject candidateObject = ResolveGameObject(candidate);
+			if (candidateObject == null) continue;
+			float distance = (candidateObject.transform.position - serverPosition).sqrMagnitude;
+			if (distance < selectedDistance)
 			{
-				_pendingLoadedServerRackUids.Remove(server);
-				continue;
-			}
-			object inHands = ReflectionUtil.ReadMember(server, "objectInHands", "ObjectInHands");
-			object onTrolley = ReflectionUtil.ReadMember(server, "isOnTrolley", "IsOnTrolley");
-			if ((inHands is bool held && held) || (onTrolley is bool trolley && trolley))
-			{
-				continue;
-			}
-			if (TryRestoreExactLoadedServerRackState(server, pending.Value, source))
-			{
-				_pendingLoadedServerRackUids.Remove(server);
-				repairedReferences++;
-				repairedReservations++;
+				selected = candidate;
+				selectedDistance = distance;
 			}
 		}
-		if (repairedReferences > 0 || repairedReservations > 0)
-		{
-			Log.Info("Recovered loaded rack state from " + source + ": references=" + repairedReferences.ToString(CultureInfo.InvariantCulture) + ", reservations=" + repairedReservations.ToString(CultureInfo.InvariantCulture) + ".");
-		}
+		return selected;
 	}
 
 	private bool TryRestoreExactLoadedServerRackState(object server, int rackPositionUid, string source)
@@ -2234,40 +2267,19 @@ internal sealed class CatalogInjector
 		{
 			return false;
 		}
-		Type rackPositionType = ReflectionUtil.FindType("RackPosition");
-		if (rackPositionType == null)
-		{
-			return false;
-		}
 		GameObject serverObject = ResolveGameObject(server);
 		if (serverObject == null || !serverObject.scene.IsValid())
 		{
 			return false;
 		}
-		object[] rackPositions = FindUnityObjectsOfTypeAllDirect(rackPositionType)
-			.Where(candidate =>
-			{
-				GameObject candidateObject = ResolveGameObject(candidate);
-				return candidateObject != null
-					&& candidateObject.scene.IsValid()
-					&& ReflectionUtil.ReadMember(candidate, "rack", "Rack") != null;
-			})
-			.ToArray();
-		if (rackPositions.Length == 0)
-		{
-			return false;
-		}
 		// Resolve only the exact authoritative saved UID. Spatial ordering may
 		// disambiguate duplicated copies of that UID, never select another slot.
-		object rackPosition = rackPositions
-			.Where(candidate => ToInt(ReflectionUtil.ReadMember(candidate, "rackPosGlobalUID", "RackPosGlobalUID")) == rackPositionUid)
-			.OrderBy(candidate => (ResolveGameObject(candidate).transform.position - serverObject.transform.position).sqrMagnitude)
-			.FirstOrDefault();
+		ExactRackIndex<object> index = GetRackPositionRepairIndex();
+		object rackPosition = FindClosestExactRackPosition(serverObject, index.GetCandidates(rackPositionUid), out float selectedDistance);
 		if (rackPosition == null)
 		{
 			return false;
 		}
-		float selectedDistance = (ResolveGameObject(rackPosition).transform.position - serverObject.transform.position).sqrMagnitude;
 		if (selectedDistance > 2.25f)
 		{
 			return false;

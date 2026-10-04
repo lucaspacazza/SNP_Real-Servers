@@ -28,6 +28,7 @@ internal sealed class SaveLifecycleCoordinator<TSnapshot>
     private readonly Action<string, string> _select;
     private readonly Action _recover;
     private readonly Func<string, string?>? _resolveRaw;
+    private readonly HashSet<SaveTransaction<TSnapshot>> _activeTransactions = new();
 
     internal SaveLifecycleCoordinator(Func<string> directory, Func<TSnapshot> capture,
         Action<string, string, TSnapshot> commit, Action<string, string> select,
@@ -47,7 +48,20 @@ internal sealed class SaveLifecycleCoordinator<TSnapshot>
         // again after it returns because the native saver may finalize IDs.
         _capture();
         string directory = _directory();
-        return new SaveTransaction<TSnapshot>(directory, name, SaveFileLocator.Capture(directory));
+        var transaction = new SaveTransaction<TSnapshot>(directory, name, SaveFileLocator.Capture(directory));
+        _activeTransactions.Add(transaction);
+        return transaction;
+    }
+
+    internal bool CaptureOutsideTransaction()
+    {
+        // SaveGame's prefix already registers exact IDs before native saving.
+        // Keep the event fallback for native saves outside that hook, without
+        // scanning the full inventory a third time for the usual save path.
+        if (_activeTransactions.Count != 0)
+            return false;
+        _capture();
+        return true;
     }
 
     internal bool CompleteSave(SaveTransaction<TSnapshot>? transaction)
@@ -55,6 +69,7 @@ internal sealed class SaveLifecycleCoordinator<TSnapshot>
         if (transaction == null || transaction.Closed)
             return false;
         transaction.Closed = true;
+        _activeTransactions.Remove(transaction);
         string? file = SaveFileLocator.ResolveWritten(transaction.Directory, transaction.RequestedName, transaction.Before, _resolveRaw);
         if (file == null)
             return false;
@@ -65,7 +80,10 @@ internal sealed class SaveLifecycleCoordinator<TSnapshot>
     internal void CancelSave(SaveTransaction<TSnapshot>? transaction)
     {
         if (transaction != null)
+        {
             transaction.Closed = true;
+            _activeTransactions.Remove(transaction);
+        }
     }
 
     internal void BeginLoad(string? name)

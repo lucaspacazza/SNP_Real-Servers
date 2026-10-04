@@ -58,7 +58,7 @@ public sealed class DataCenterAutomatorServersMod : MelonMod
 	{
 		_savingHandler = (Action)(() =>
 		{
-			try { _injector?.CapturePersistenceSnapshot(); }
+			try { _saveLifecycle?.CaptureOutsideTransaction(); }
 			catch (Exception error) { Log.Error("Could not capture exact server identities before native saving.", error); }
 		});
 		_loadedHandler = (Action)(() =>

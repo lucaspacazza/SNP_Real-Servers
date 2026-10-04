@@ -610,10 +610,7 @@ internal static class PatchRegistry
 		{
 			DataCenterAutomatorServersMod.TryConfigurePendingLifecycleServerFromPatch(source, __instance);
 		}
-		DataCenterAutomatorServersMod.TryRepairKnownPersistedServerFromPatch(source, __instance, forceDisplayRefresh: true);
 		DataCenterAutomatorServersMod.TryPersistKnownServerIdentityFromPatch(source, __instance);
-		if (__originalMethod.Name == "MoveToHand" || __originalMethod.Name == "DropObject")
-			Log.Info("Native server pickup/drop completed through declared hook: " + source + ".");
 	}
 
 	public static void ServerMoveToHandPrefix(object? __instance, MethodBase __originalMethod)
