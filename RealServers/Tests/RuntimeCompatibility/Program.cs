@@ -248,6 +248,68 @@ internal static class Program
             Assert(calls.Contains("CaptureOutsideTransaction"), "The native event still captures the entire datacenter again during an active save.");
             Assert(!calls.Contains("CapturePersistenceSnapshot"), "The event bypasses the transaction guard.");
         });
+        Run("Resource discovery restores a Server wrapper before reading native save fields", () =>
+        {
+            var actual = new FakeServer { ServerID = "Server.Green1_-42", rackPositionUID = 73 };
+            var wrapper = new FakeNativeWrapper(actual);
+            object? restored = Call(null, "CastResourceObject", wrapper, typeof(FakeServer));
+            Assert(ReferenceEquals(actual, restored), "Base Unity wrapper was not converted to its requested Server type.");
+            Assert(((FakeServer)restored!).ServerID == "Server.Green1_-42" && ((FakeServer)restored).rackPositionUID == 73,
+                "Typed resource lost the exact persisted native identity/rack UID.");
+            Assert(wrapper.CastCount == 1, "A resource needs exactly one native cast, independent of cache state.");
+        });
+        Run("Resource discovery never returns an unrelated wrapper as its requested type", () =>
+        {
+            var wrapper = new FakeNativeWrapper(new FakeRackPosition { rackPosGlobalUID = 73 });
+            Assert(Call(null, "CastResourceObject", wrapper, typeof(FakeServer)) == null, "A wrong resource type was retained as a Server.");
+            Assert(Call(null, "CastResourceObject", null, typeof(FakeServer)) == null, "Null Unity resource was retained.");
+            Assert(Call(null, "CastResourceObject", wrapper, null) == null, "Absent requested type cannot discover arbitrary resources.");
+        });
+        Run("Already typed resources retain their instance and rack results cast to RackPosition", () =>
+        {
+            var server = new FakeServer { ServerID = "Server.Green1_-42" };
+            Assert(ReferenceEquals(server, Call(null, "CastResourceObject", server, typeof(FakeServer))), "A typed resource was unnecessarily recreated.");
+            var rack = new FakeRackPosition { rackPosGlobalUID = 42 };
+            Assert(ReferenceEquals(rack, Call(null, "CastResourceObject", new FakeNativeWrapper(rack), typeof(FakeRackPosition))), "RackPosition indexing still reads an untyped Unity wrapper.");
+        });
+        Run("One thousand uncached resources each produce one exact typed result", () =>
+        {
+            int casts = 0, found = 0;
+            for (int index = 0; index < 1_000; index++)
+            {
+                var server = new FakeServer { ServerID = "Server.Green1_" + index, rackPositionUID = index + 1 };
+                var wrapper = new FakeNativeWrapper(server);
+                Assert(ReferenceEquals(server, Call(null, "CastResourceObject", wrapper, typeof(FakeServer))), "Uncached wrapper disappeared from the snapshot.");
+                casts += wrapper.CastCount; found++;
+            }
+            Assert(casts == 1_000 && found == 1_000, "Discovery repeated casts or skipped uncached resources.");
+        });
+        Run("Direct Unity resource enumeration actually applies the requested cast", () =>
+        {
+            var iterator = Injector.GetNestedTypes(BindingFlags.NonPublic).Single(type => type.Name.StartsWith("<FindUnityObjectsOfTypeAllDirect>"));
+            Assert(CalledBy(iterator, "MoveNext").Contains("CastResourceObject"), "The game resource iterator still yields base Unity.Object wrappers directly.");
+        });
+        Run("A known saved identity without a custom visual still requires its first physical setup", () =>
+        {
+            var server = new FakeServer { ServerID = "Server.Green1_-42", maxProcessingSpeed = .20f };
+            var known = new HashSet<object> { server };
+            var prepared = new HashSet<object>();
+            Assert(known.Contains(server) && !(bool)Call(null, "IsPhysicalServerPreparedIn", prepared, server)!, "Identity-known stock visual incorrectly skips its first model/form-factor restoration.");
+            Call(null, "MarkPhysicalServerPreparedIn", prepared, server);
+            Assert((bool)Call(null, "IsPhysicalServerPreparedIn", prepared, server)!, "Completed physical setup was not remembered for subsequent startup callbacks.");
+            prepared.Clear();
+            Assert(!(bool)Call(null, "IsPhysicalServerPreparedIn", prepared, server)!, "Preparation leaked from the preceding scene into newly loaded servers.");
+            Assert(Fields("ResetRuntimeAttemptState").Contains("_preparedPhysicalServers"), "Scene/load reset retains physical readiness from the previous world.");
+        });
+        Run("Saved insertion and native startup check physical readiness independently of identity", () =>
+        {
+            foreach (string method in new[] { "TryFinalizeInsertedServer", "TryConfigurePendingLifecycleServer" })
+                Assert(Called(method).Contains("IsPhysicalServerPrepared"), method + " still treats identity knowledge as completed physical setup.");
+            Assert(Fields("IsPhysicalServerPrepared").Contains("_preparedPhysicalServers") && !Fields("IsPhysicalServerPrepared").Contains("_knownModdedServers"), "Preparation guard still uses an identity-only marker.");
+            Assert(Called("TryFinalizeInsertedServer").Contains("ConfigureServerAndPorts"), "An unprepared saved server cannot receive its first full restoration.");
+            var calls = Called("ConfigureServerAndPorts");
+            Assert(Array.IndexOf(calls, "MarkPhysicalServerPrepared") > Array.IndexOf(calls, "ConfigureServerLiveControls"), "Physical readiness is published before visual/port setup finishes.");
+        });
         Console.WriteLine($"{_passed} passed, {_failed} failed.");
         return _failed == 0 ? 0 : 1;
     }
@@ -325,6 +387,14 @@ internal static class Program
         public void PowerButton(bool forceState) { NativePowerCalls++; IpDuplicateChecks++; isOn = forceState || !isOn; }
     }
     public sealed class FakeShopPayload { public int itemID, price; public string itemName = ""; }
+    public sealed class FakeRackPosition { public int rackPosGlobalUID; }
+    public sealed class FakeNativeWrapper
+    {
+        private readonly object _native;
+        internal int CastCount;
+        internal FakeNativeWrapper(object native) => _native = native;
+        public T? TryCast<T>() where T : class { CastCount++; return _native as T; }
+    }
     public sealed class FakeShopCard
     {
         public string itemDisplayName = "", guid = "", name = "";
