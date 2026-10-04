@@ -310,6 +310,24 @@ internal static class Program
             var calls = Called("ConfigureServerAndPorts");
             Assert(Array.IndexOf(calls, "MarkPhysicalServerPrepared") > Array.IndexOf(calls, "ConfigureServerLiveControls"), "Physical readiness is published before visual/port setup finishes.");
         });
+        Run("Saved server identity is captured before native ID remapping", () =>
+        {
+            var patches=Mod.GetType("DataCenterAutomatorServers.PatchRegistry",true)!;
+            var method=patches.GetMethod("ServerInsertedPrefix",BindingFlags.Public|BindingFlags.Static);
+            Assert(method!=null,"Native insertion has no pre-remap saved identity hook.");
+            Assert(CalledBy(patches,"ServerInsertedPrefix").Contains("TryPrepareLoadedServerIdentityFromPatch"),"The authoritative serialized ID is not captured before native insertion.");
+            Assert(Called("RecoverLoadedServerVariantIdentity").Contains("ReadSavedSourceServerId"),"Reload still relies solely on the live ID after native remapping.");
+        });
+        Run("Native snapshot publishes the explicit manual rack reservation", () =>
+        {
+            Assert(Called("CapturePersistenceSnapshot").Contains("PrepareNativeSnapshotRackUid"),"The selected manual rack is omitted from native save preparation.");
+            Assert(Called("PrepareNativeSnapshotRackUid").Contains("TryEnsureNativeRackPositionUid"),"Snapshotting accepts an unregistered native slot.");
+        });
+        Run("Legacy repair is limited to owned unknown records and exact poses", () =>
+        {
+            Assert(Called("TrackLoadedServerRackState").Contains("HasUnknownSavedRackLocation"),"Explicitly loose snapshots can be captured as mounted legacy servers.");
+            Assert(Called("RepairLegacyExactRackMounts").Contains("FindUnique"),"Legacy migration guesses a nearby rack instead of requiring a unique saved pose.");
+        });
         Console.WriteLine($"{_passed} passed, {_failed} failed.");
         return _failed == 0 ? 0 : 1;
     }
