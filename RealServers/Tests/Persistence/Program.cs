@@ -35,9 +35,51 @@ void RewriteSnapshotSchema(string path, int schema, params ServerIdentityRecord[
     if (records.Length != 0) snapshot.Records = records.ToList();
     File.WriteAllText(path, JsonSerializer.Serialize(snapshot));
 }
+void PrefixUtf8Bom(string path)
+{
+    byte[] bytes = File.ReadAllBytes(path);
+    File.WriteAllBytes(path, new byte[] { 0xef, 0xbb, 0xbf }.Concat(bytes).ToArray());
+}
+void AssertSnapshotIdentities(ServerIdentityStore store, params ServerIdentityRecord[] records)
+{
+    Equal(true, store.HasSnapshot);
+    Equal(records.Length, store.Records.Count);
+    Equal(true, new HashSet<ServerIdentityRecord>(records).SetEquals(store.Records));
+    foreach (var record in records) {
+        Equal(record.VariantId, store.GetByServerId(record.ServerId));
+        Equal(record.VariantId, store.GetByLooseId(record.LooseId));
+        Equal(record, store.FindSaved(record.ServerId, record.LooseId));
+    }
+}
 
 try
 {
+    Test("UTF-8 BOM primary restores exact models and mounted or loose rack metadata", () => {
+        string root = Temp(), file = Save(root, "A"), directory = Path.Combine(root, "identities");
+        var records = new[] { R(), R("Server.Green2_-90", "cart-90", -1, "dell_xe8640") };
+        new ServerIdentityStore(directory).CommitSnapshot("A", file, records);
+        PrefixUtf8Bom(Directory.GetFiles(directory, "*.json").Single());
+        var reloaded = new ServerIdentityStore(directory); reloaded.SelectSave("A", file);
+        AssertSnapshotIdentities(reloaded, records);
+    });
+    Test("UTF-8 BOM backup restores exact identities after a truncated primary", () => {
+        string root = Temp(), file = Save(root, "A"), directory = Path.Combine(root, "identities");
+        var records = new[] { R(), R("Server.Green2_-90", "cart-90", -1, "dell_xe8640") };
+        var store = new ServerIdentityStore(directory);
+        store.CommitSnapshot("A", file, records); store.CommitSnapshot("A", file, records);
+        string primary = Directory.GetFiles(directory, "*.json").Single();
+        PrefixUtf8Bom(primary + ".bak"); File.WriteAllText(primary, "{truncated");
+        var reloaded = new ServerIdentityStore(directory); reloaded.SelectSave("A", file);
+        AssertSnapshotIdentities(reloaded, records);
+    });
+    Test("UTF-8 BOM content candidate restores models and rack metadata for renamed save", () => {
+        string root = Temp(), file = Save(root, "A"), copy = Save(root, "Renamed"), directory = Path.Combine(root, "identities");
+        var records = new[] { R(), R("Server.Green2_-90", "cart-90", -1, "dell_xe8640") };
+        new ServerIdentityStore(directory).CommitSnapshot("A", file, records);
+        PrefixUtf8Bom(Directory.GetFiles(directory, "*.json").Single());
+        var reloaded = new ServerIdentityStore(directory); reloaded.SelectSave("Renamed", copy);
+        AssertSnapshotIdentities(reloaded, records);
+    });
     Test("Record identity survives exact server ID and loose ID roundtrip", () => {
         string root = Temp(), file = Save(root, "A");
         var registry = new RuntimeVariantRegistry(root); registry.SelectSave("A", file);
