@@ -204,6 +204,32 @@ internal static class Program
             Assert(!ownBody.isKinematic && ownBody.useGravity);
         });
 
+        Run("One hundred cargo bodies do not rescan one hundred chassis descendants per item", () =>
+        {
+            var f = Fixture.Create();
+            var cargo = Enumerable.Range(0, 100).Select(_ => NewItem(withBody: true)).ToArray();
+            foreach (var item in cargo) item.transform.parent = f.Bay.transform;
+            Collider.AttachedBodyReads = 0;
+            foreach (var item in cargo) f.Physics.Hold(item, f.Bay);
+            Assert(Collider.AttachedBodyReads < 500, $"Expected linear chassis discovery, got {Collider.AttachedBodyReads} native attached-body reads.");
+            foreach (var item in cargo) Assert(item.rb!.isKinematic && !item.rb.useGravity);
+        });
+        Run("Explicit chassis refresh discovers new colliders without reclaiming previous exclusions", () =>
+        {
+            var f = Fixture.Create();
+            f.Physics.Hold(f.Item, f.Bay);
+            var added = f.Bay.gameObject.AddComponent<Collider>();
+            UnityEngine.Physics.ForgetIgnorePair(f.ItemCollider, f.ChassisCollider);
+            var refresh = typeof(CargoPhysics).GetMethod("InvalidateChassis", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            Assert(refresh is not null, "Chassis cache needs explicit native reactivation invalidation.");
+            refresh!.Invoke(f.Physics, new object?[] { f.Bay });
+            f.Physics.Hold(f.Item, f.Bay);
+            Assert(UnityEngine.Physics.GetIgnoreCollision(f.ItemCollider, added));
+            Assert(UnityEngine.Physics.GetIgnoreCollision(f.ItemCollider, f.ChassisCollider));
+            f.Physics.Release(f.Item);
+            Assert(!UnityEngine.Physics.GetIgnoreCollision(f.ItemCollider, added));
+            Assert(!UnityEngine.Physics.GetIgnoreCollision(f.ItemCollider, f.ChassisCollider));
+        });
         Console.WriteLine($"Physics: {_passed} passed; {_failed} failed. These tests use Unity/IL2CPP fakes, not an in-game physics simulation.");
         return _failed == 0 ? 0 : 1;
     }
@@ -241,9 +267,9 @@ internal static class Program
         catch (Exception error) { _failed++; Console.Error.WriteLine("FAIL " + name + ": " + error.Message); }
     }
 
-    private static void Assert(bool condition)
+    private static void Assert(bool condition, string message = "Expected condition was false.")
     {
-        if (!condition) throw new InvalidOperationException("Expected condition was false.");
+        if (!condition) throw new InvalidOperationException(message);
     }
 
     private static void Equal<T>(T expected, T actual)

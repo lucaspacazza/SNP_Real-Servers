@@ -177,6 +177,15 @@ internal static class Program
             Assert(!ReferenceEquals(first.usedPositions, second.usedPositions));
         });
 
+        Run("Repeated ready capacity checks do not allocate a reservation-sized managed buffer", () =>
+        {
+            var bay = Bay(1024);
+            NativeSlotExpander.Ensure(bay, 1);
+            var start = GC.GetAllocatedBytesForCurrentThread();
+            for (var index = 0; index < 1000; index++) Assert(NativeSlotExpander.Ensure(bay, 1));
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - start;
+            Assert(allocated < 128000, $"Ready capacity checks allocated {allocated} managed bytes in one thousand calls.");
+        });
         Console.WriteLine($"{_passed} passed, {_failed} failed.");
         return _failed == 0 ? 0 : 1;
     }

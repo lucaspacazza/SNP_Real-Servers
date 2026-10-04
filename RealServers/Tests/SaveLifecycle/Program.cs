@@ -3,6 +3,12 @@ using DataCenterAutomatorServers;
 internal static class Program
 {
     private static int _passed, _failed;
+    private static bool CaptureOutsideTransaction(SaveLifecycleCoordinator<string[]> flow)
+    {
+        var method = typeof(SaveLifecycleCoordinator<string[]>).GetMethod("CaptureOutsideTransaction", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        if (method == null) throw new InvalidOperationException("Standalone events have no active-transaction capture guard.");
+        return (bool)method.Invoke(flow, null)!;
+    }
     private static int Main()
     {
         Run("Raw save names resolve without an extension", root =>
@@ -163,6 +169,51 @@ internal static class Program
             try { flow.CompleteSave(transaction); throw new InvalidOperationException("Expected the commit failure"); }
             catch (IOException) { }
             True(!flow.CompleteSave(transaction));
+        });
+        Run("A native save event reuses the active prefix snapshot", root =>
+        {
+            var captures = 0;
+            var flow = Flow(root, () => { captures++; return new[] { "Dell" }; }, (_, _, _) => { });
+            var transaction = flow.PrepareSave("A");
+            True(!CaptureOutsideTransaction(flow));
+            Equal(1, captures);
+            Save(root, "A.save", "native");
+            True(flow.CompleteSave(transaction));
+            Equal(2, captures);
+            True(CaptureOutsideTransaction(flow));
+            Equal(3, captures);
+        });
+        Run("Standalone native events still capture exact identities", root =>
+        {
+            var captures = 0;
+            var flow = Flow(root, () => { captures++; return new[] { "Dell" }; }, (_, _, _) => { });
+            True(CaptureOutsideTransaction(flow));
+            Equal(1, captures);
+        });
+        Run("Cancelling a native save releases the standalone event guard", root =>
+        {
+            var flow = Flow(root, () => new[] { "Dell" }, (_, _, _) => { });
+            var transaction = flow.PrepareSave("A");
+            flow.CancelSave(transaction);
+            True(CaptureOutsideTransaction(flow));
+        });
+        Run("A failed sidecar commit does not suppress later standalone events", root =>
+        {
+            var flow = Flow(root, () => new[] { "Dell" }, (_, _, _) => throw new IOException("commit failed"));
+            var transaction = flow.PrepareSave("A");
+            Save(root, "A.save", "native");
+            try { flow.CompleteSave(transaction); } catch (IOException) { }
+            True(CaptureOutsideTransaction(flow));
+        });
+        Run("Nested native saves guard events until every transaction closes", root =>
+        {
+            var flow = Flow(root, () => new[] { "Dell" }, (_, _, _) => { });
+            var outer = flow.PrepareSave("A");
+            var inner = flow.PrepareSave("B");
+            flow.CancelSave(inner);
+            True(!CaptureOutsideTransaction(flow));
+            flow.CancelSave(outer);
+            True(CaptureOutsideTransaction(flow));
         });
         Console.WriteLine($"Save lifecycle: {_passed} passed; {_failed} failed.");
         return _failed == 0 ? 0 : 1;

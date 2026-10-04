@@ -233,6 +233,21 @@ internal static class Program
             Assert(Called("TryRefreshShopItemText").Contains("HideUnavailableShopItem") && Called("TryRegisterShopUiVariants").Contains("HideUnavailableShopItem"), "Shop lifecycle can reactivate unavailable offers.");
             Assert(!Called("HideUnavailableShopItem").Contains("ConfigureServer") && !Called("HideUnavailableShopItem").Contains("Destroy"), "Shop cleanup mutates physical inventory.");
         });
+        Run("Lifecycle hooks avoid a second full model and port rebuild", () =>
+        {
+            var patches = Mod.GetType("DataCenterAutomatorServers.PatchRegistry", true)!;
+            var calls = CalledBy(patches, "ServerLifecycleRepairPostfix");
+            Assert(!calls.Contains("TryRepairKnownPersistedServerFromPatch"), "Every pickup/startup still rebuilds the entire custom model and ports after the lightweight callback.");
+            Assert(calls.Contains("TryConfigurePowerControlsFromPatch") && calls.Contains("TryConfigurePendingLifecycleServerFromPatch") && calls.Contains("TryPersistKnownServerIdentityFromPatch"), "Removing duplicate repairs also removed required control or identity callbacks.");
+        });
+        Run("Native save events use the active-transaction snapshot guard", () =>
+        {
+            var entry = Mod.GetType("DataCenterAutomatorServers.DataCenterAutomatorServersMod", true)!;
+            var callbacks = entry.GetMethods(BindingFlags.NonPublic | BindingFlags.Instance).Where(method => method.Name.Contains("<SubscribeSaveEvents>"));
+            var calls = callbacks.SelectMany(method => CalledBy(entry, method.Name)).ToArray();
+            Assert(calls.Contains("CaptureOutsideTransaction"), "The native event still captures the entire datacenter again during an active save.");
+            Assert(!calls.Contains("CapturePersistenceSnapshot"), "The event bypasses the transaction guard.");
+        });
         Console.WriteLine($"{_passed} passed, {_failed} failed.");
         return _failed == 0 ? 0 : 1;
     }
@@ -250,9 +265,12 @@ internal static class Program
         .Select(token => Injector.Module.ResolveMethod(token)!.Name).ToArray();
     private static string[] Fields(string name) => Operands(name, OperandType.InlineField)
         .Select(token => Injector.Module.ResolveField(token)!.Name).ToArray();
-    private static IEnumerable<int> Operands(string name, OperandType desired)
+    private static string[] CalledBy(Type type, string name) => Operands(type, name, OperandType.InlineMethod)
+        .Select(token => type.Module.ResolveMethod(token)!.Name).ToArray();
+    private static IEnumerable<int> Operands(string name, OperandType desired) => Operands(Injector, name, desired);
+    private static IEnumerable<int> Operands(Type type, string name, OperandType desired)
     {
-        var method = Injector.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)!;
+        var method = type.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)!;
         var bytes = method.GetMethodBody()!.GetILAsByteArray()!;
         var opcodes = typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static).Where(f => f.FieldType == typeof(OpCode))
             .Select(f => (OpCode)f.GetValue(null)!).ToDictionary(value => value.Value);
