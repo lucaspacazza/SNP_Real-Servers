@@ -1,6 +1,8 @@
 using DataCenterAutomatorServers;
 using System.Numerics;
 using System.Text.Json;
+using System.Runtime.InteropServices;
+using System.Diagnostics;
 
 int passed = 0, failed = 0;
 void Check(string name, Action check)
@@ -134,6 +136,39 @@ Check("Repeated material identity coalesces triangle slots only when explicitly 
     Assert(a.Submeshes.Length == 1 && a.Submeshes[0].Indices.SequenceEqual(new[] { 0, 2, 1, 3, 5, 4 }), "Exact material slot batching failed.");
     var b = GltfMeshBatcher.Build(new[] { Triangle(7), Triangle(7) })[0];
     Assert(b.Submeshes.Length == 2, "Default path changed material draw order.");
+});
+string modAssembly = args.Length > 0 ? Path.GetFullPath(args[0])
+    : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "bin", "Release", "netcoreapp6.0", "RealServers.dll"));
+Check("Position and normal decoding cannot invoke native Unity vector constructors per vertex", () =>
+{
+    int calls = ImportContracts.VectorConstructorCalls(modAssembly, "ReadVec3Accessor");
+    Assert(calls == 0, $"Decoder retains {calls} native constructor call site(s): XE8640 positions+normals execute these 1,908,450 times.");
+});
+Check("UV decoding cannot invoke native Unity vector constructors per vertex", () =>
+{
+    int calls = ImportContracts.VectorConstructorCalls(modAssembly, "ReadVec2Accessor");
+    Assert(calls == 0, $"Decoder retains {calls} native constructor call site(s): XE8640 UVs execute these 954,225 times.");
+});
+Check("A full-size XE8640 byte-buffer fixture retains geometry and attributes in one batch", () =>
+{
+    const int vertices = 954225;
+    var clock = Stopwatch.StartNew();
+    var positionBytes = new byte[vertices * 12];
+    BitConverter.GetBytes(12.5f).CopyTo(positionBytes, 0);
+    BitConverter.GetBytes(-7.25f).CopyTo(positionBytes, positionBytes.Length - 4);
+    var positions = MemoryMarshal.Cast<byte, Vector3>(positionBytes).ToArray();
+    var normals = new Vector3[vertices]; normals[0] = Vector3.UnitZ; normals[^1] = Vector3.UnitY;
+    var uvBytes = new byte[vertices * 8];
+    BitConverter.GetBytes(0.25f).CopyTo(uvBytes, 0);
+    BitConverter.GetBytes(0.75f).CopyTo(uvBytes, uvBytes.Length - 4);
+    var uvs = MemoryMarshal.Cast<byte, Vector2>(uvBytes).ToArray();
+    var batch = GltfMeshBatcher.Build(new[] { new GltfPrimitive<Vector3, Vector2>(positions, normals, uvs, new[] { 0, vertices - 1, 1 }, 3) })[0];
+    Assert(batch.Vertices.Length == vertices && batch.Normals!.Length == vertices && batch.Uvs!.Length == vertices, "Large input lost attributes.");
+    Assert(batch.Vertices[0].X == 12.5f && batch.Vertices[^1].Z == -7.25f, "Position bytes changed.");
+    Assert(batch.Normals![0] == Vector3.UnitZ && batch.Normals[^1] == Vector3.UnitY, "Normal bytes changed.");
+    Assert(batch.Uvs![0].X == 0.25f && batch.Uvs[^1].Y == 0.75f, "UV bytes changed.");
+    Assert(batch.Uses32BitIndices && batch.Submeshes[0].Indices.SequenceEqual(new[] { 0, vertices - 1, 1 }), "High indices or winding changed.");
+    Console.WriteLine($"GIANT FIXTURE {vertices:N0} vertices, {vertices * 3:N0} vector values retained, managed batch {clock.ElapsedMilliseconds} ms. Native import timing requires Unity.");
 });
 
 Console.WriteLine($"Visual batching: {passed}/{passed + failed} passed.");
