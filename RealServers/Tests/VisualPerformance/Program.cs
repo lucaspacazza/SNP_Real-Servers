@@ -149,6 +149,11 @@ Check("UV decoding cannot invoke native Unity vector constructors per vertex", (
     int calls = ImportContracts.VectorConstructorCalls(modAssembly, "ReadVec2Accessor");
     Assert(calls == 0, $"Decoder retains {calls} native constructor call site(s): XE8640 UVs execute these 954,225 times.");
 });
+Check("All three typed upload helpers avoid per-element native array pointer lookups", () =>
+{
+    int calls = ImportContracts.PerElementUploadCalls(modAssembly);
+    Assert(calls == 0, $"Upload helpers retain {calls} element setters, each recalculating the native span/pointer per value.");
+});
 Check("A full-size XE8640 byte-buffer fixture retains geometry and attributes in one batch", () =>
 {
     const int vertices = 954225;
