@@ -115,6 +115,7 @@ namespace UnityEngine
     }
     public sealed class Transform : Component
     {
+        public static int GeometryCalls;
         public Vector3 position;
         public float YawDegrees;
         public Transform? parent { get; private set; }
@@ -129,6 +130,7 @@ namespace UnityEngine
         }
         public Vector3 InverseTransformPoint(Vector3 point)
         {
+            GeometryCalls++;
             var difference = point - position;
             var angle = -YawDegrees * MathF.PI / 180f;
             return new Vector3(MathF.Cos(angle) * difference.x + MathF.Sin(angle) * difference.z,

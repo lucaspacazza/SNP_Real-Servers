@@ -312,6 +312,7 @@ internal static class Program
             Call("BayReady", bay);
             GameObject.ColliderDiscoveryCalls = 0;
             for (var index = 0; index < 60; index++) Call("PrepareCapacity", bay);
+            Console.WriteLine($"MEASURE 60 hover frames: {GameObject.ColliderDiscoveryCalls} collider traversals.");
             Assert(GameObject.ColliderDiscoveryCalls == 0, $"Hover performed {GameObject.ColliderDiscoveryCalls} collider tree traversals in sixty frames.");
         });
         Run("Fatal native recovery failure stops global rescans while preserving protected cargo", () =>
@@ -329,6 +330,7 @@ internal static class Program
                     Time.realtimeSinceStartup = 0.8f + index;
                     mod.OnUpdate();
                 }
+                Console.WriteLine($"MEASURE fatal recovery: {UnityEngine.Object.GlobalDiscoveryCalls} scene scans in 20 attempts.");
                 Assert(UnityEngine.Object.GlobalDiscoveryCalls == 1, $"Fatal native failure caused {UnityEngine.Object.GlobalDiscoveryCalls} scene scans.");
                 Assert(item.rb!.isKinematic && !item.rb.useGravity, "Fatal recovery cannot release existing cargo protection.");
             }
@@ -346,7 +348,25 @@ internal static class Program
                 Time.realtimeSinceStartup = 0.8f + index;
                 mod.OnUpdate();
             }
+            Console.WriteLine($"MEASURE unready trolley: {UnityEngine.Object.GlobalDiscoveryCalls} scene scans in 40 seconds.");
             Assert(UnityEngine.Object.GlobalDiscoveryCalls <= 6, $"Unready trolley triggered {UnityEngine.Object.GlobalDiscoveryCalls} scene scans in forty seconds.");
+        });
+        Run("Racked and held servers skip geometry while legitimate loose cargo is recovered", () =>
+        {
+            var (_, bay, item, _) = Cargo();
+            Transform.GeometryCalls = 0;
+            item.objectInHands = true;
+            Assert(!(bool)Call("IsLoadCandidate", item, bay)!, "Held server must be excluded.");
+            item.objectInHands = false;
+            item.rackPositionUID = 42;
+            Assert(!(bool)Call("IsLoadCandidate", item, bay)!, "Server with a saved rack identity must be excluded.");
+            item.rackPositionUID = 0;
+            item.currentRackPosition = new RackPosition();
+            Assert(!(bool)Call("IsLoadCandidate", item, bay)!, "Server mounted in a rack must be excluded.");
+            Assert(Transform.GeometryCalls == 0, $"Excluded servers triggered {Transform.GeometryCalls} geometry calls.");
+            item.currentRackPosition = null;
+            Assert((bool)Call("IsLoadCandidate", item, bay)!, "Loose cargo inside the loading box must remain eligible.");
+            Assert(Transform.GeometryCalls > 0, "Loose cargo must still undergo the geometry check.");
         });
         Console.WriteLine($"{_passed} passed, {_failed} failed.");
         return _failed == 0 ? 0 : 1;
