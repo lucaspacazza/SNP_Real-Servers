@@ -120,7 +120,7 @@ $env:SNP_DATACENTER_DIR = $gameDir
 dotnet run --project .\RealServers\Tests\SaveHooks\SaveHooks.Tests.csproj -c Release "-p:GameDir=$gameDir"
 ```
 
-Os testes de código gerenciado e de metadados não substituem a verificação de compra, retirada do servidor, instalação no rack, conexão de cabos e salvamento/carregamento dentro do jogo em Unity. Real Servers **0.2.5** mantém as quatro opções da loja, registra os slots de montagem pelo mecanismo nativo de UID, restaura os modelos físicos independentemente da consulta de identidade e evita chamadas nativas por vértice na importação. A recuperação de racks antigos exige uma posição e rotação salvas que correspondam a um único slot livre. Seu ciclo completo de uso ainda precisa ser verificado dentro do jogo.
+Os testes de código gerenciado e de metadados não substituem a verificação de compra, retirada do servidor, instalação no rack, conexão de cabos e salvamento/carregamento dentro do jogo em Unity. Real Servers **0.2.6** mantém as quatro opções da loja, registra os slots de montagem pelo mecanismo nativo de UID, restaura os modelos físicos independentemente da consulta de identidade e evita chamadas nativas por vértice na importação. A recuperação de racks antigos exige uma posição e rotação salvas que correspondam a um único slot livre. Seu ciclo completo de uso ainda precisa ser verificado dentro do jogo.
 
 ## Estrutura do repositório
 

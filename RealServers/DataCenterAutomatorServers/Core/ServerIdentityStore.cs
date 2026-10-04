@@ -179,7 +179,13 @@ internal sealed class ServerIdentityStore
         if (!File.Exists(path)) return null;
         try
         {
-            ServerIdentitySnapshot? result = JsonSerializer.Deserialize<ServerIdentitySnapshot>(File.ReadAllBytes(path));
+            byte[] bytes = File.ReadAllBytes(path);
+            ReadOnlySpan<byte> json = bytes;
+            // Windows PowerShell and some editors write UTF-8 with a BOM.
+            // System.Text.Json expects JSON bytes without that encoding marker.
+            if (json.Length >= 3 && json[0] == 0xEF && json[1] == 0xBB && json[2] == 0xBF)
+                json = json.Slice(3);
+            ServerIdentitySnapshot? result = JsonSerializer.Deserialize<ServerIdentitySnapshot>(json);
             return result is { SchemaVersion: 1 or 2, Records: not null }
                 && !string.IsNullOrWhiteSpace(result.RawSaveName)
                 && result.SaveFingerprint?.Length == 64 ? result : null;

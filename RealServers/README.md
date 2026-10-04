@@ -1,4 +1,4 @@
-# Real Servers 0.2.5
+# Real Servers 0.2.6
 
 A MelonLoader mod for **Data Center by Waseku** that adds four Dell and Lenovo server entries to the shop:
 

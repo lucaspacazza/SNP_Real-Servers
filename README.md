@@ -120,7 +120,7 @@ $env:SNP_DATACENTER_DIR = $gameDir
 dotnet run --project .\RealServers\Tests\SaveHooks\SaveHooks.Tests.csproj -c Release "-p:GameDir=$gameDir"
 ```
 
-Managed and metadata tests do not replace playing through purchase, pickup, rack installation, cabling, and save/reload in Unity. Real Servers **0.2.5** keeps the four-entry shop, registers manual rack slots through the native UID mechanism, restores physical models independently of identity lookup, and avoids per-vertex native calls during model imports. Legacy rack recovery requires a unique exact saved pose and a free matching slot. Its complete native gameplay cycle still requires in-game verification.
+Managed and metadata tests do not replace playing through purchase, pickup, rack installation, cabling, and save/reload in Unity. Real Servers **0.2.6** keeps the four-entry shop, registers manual rack slots through the native UID mechanism, restores physical models independently of identity lookup, and avoids per-vertex native calls during model imports. Legacy rack recovery requires a unique exact saved pose and a free matching slot. Its complete native gameplay cycle still requires in-game verification.
 
 ## Repository layout
 
