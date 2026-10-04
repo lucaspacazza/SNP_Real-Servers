@@ -34,6 +34,8 @@ internal static class RuntimeGltfVisualLoader
 
 	private static Material? VisibleMaterialTemplate;
 
+	private static readonly Dictionary<int, (Material Material, bool Opaque)> PreparedVisualMaterials = new();
+
 	public static void BeginScene()
 	{
 		// Save loads recreate every server and its native outline components.
@@ -75,7 +77,7 @@ internal static class RuntimeGltfVisualLoader
 			Log.Warning("Standalone visual asset not found for " + spec.VariantDisplayName + ": " + assetPath);
 			return null;
 		}
-		GameObject loadedPrefab = LoadPrefab(assetPath);
+		GameObject loadedPrefab = LoadPrefab(assetPath, ShouldForceOpaque(spec));
 		if (loadedPrefab == null)
 		{
 			return null;
@@ -152,7 +154,7 @@ internal static class RuntimeGltfVisualLoader
 			Log.Warning("Visual asset not found for " + spec.VariantDisplayName + ": " + assetPath);
 			return false;
 		}
-		GameObject prefab = LoadPrefab(assetPath);
+		GameObject prefab = LoadPrefab(assetPath, ShouldForceOpaque(spec));
 		if (prefab == null)
 		{
 			return false;
@@ -782,20 +784,21 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 		return ReflectionUtil.ReadMember(unityObject, "gameObject", "GameObject") as GameObject;
 	}
 
-	private static GameObject? LoadPrefab(string path)
+	private static GameObject? LoadPrefab(string path, bool forceOpaque)
 	{
-		if (PrefabCache.TryGetValue(path, out GameObject cached) && cached != null)
+		string cacheKey = path + (forceOpaque ? "|opaque" : "|original-alpha");
+		if (PrefabCache.TryGetValue(cacheKey, out GameObject cached) && cached != null)
 		{
 			return cached;
 		}
 		try
 		{
-			GameObject prefab = GltfMeshReader.Load(path);
-			AttachDistanceLod(prefab, path);
+			GameObject prefab = GltfMeshReader.Load(path, forceOpaque);
+			AttachDistanceLod(prefab, path, forceOpaque);
 			prefab.name = "RealServers_Prefab_" + Path.GetFileNameWithoutExtension(path);
 			prefab.SetActive(false);
 			Object.DontDestroyOnLoad(prefab);
-			PrefabCache[path] = prefab;
+			PrefabCache[cacheKey] = prefab;
 			return prefab;
 		}
 		catch (Exception exception)
@@ -805,7 +808,7 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 		}
 	}
 
-	private static void AttachDistanceLod(GameObject prefab, string sourcePath)
+	private static void AttachDistanceLod(GameObject prefab, string sourcePath, bool forceOpaque)
 	{
 		string lodPath = Path.ChangeExtension(sourcePath, ".lod.glb");
 		if (!File.Exists(lodPath))
@@ -817,12 +820,14 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 		try
 		{
 			var fullRenderers = prefab.GetComponentsInChildren<Renderer>(includeInactive: true);
-			distantVisual = GltfMeshReader.Load(lodPath);
+			distantVisual = GltfMeshReader.Load(lodPath, forceOpaque);
 			distantVisual.name = "RealServers_DistanceLOD";
 			distantVisual.transform.SetParent(prefab.transform, worldPositionStays: false);
 			var distantRenderers = distantVisual.GetComponentsInChildren<Renderer>(includeInactive: true);
 			group = prefab.AddComponent<LODGroup>();
 			var levels = new Il2CppReferenceArray<LOD>(2);
+			// Keep the detailed front panel visible at ordinary interaction distance.
+			// Distance LOD should take over only when the chassis is farther away.
 			levels[0] = new LOD(0.10f, new Il2CppReferenceArray<Renderer>(fullRenderers.ToArray()));
 			levels[1] = new LOD(0.001f, new Il2CppReferenceArray<Renderer>(distantRenderers.ToArray()));
 			group.SetLODs(levels);
@@ -1127,10 +1132,13 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 		}
 	}
 
+	private static bool ShouldForceOpaque(ServerVariantSpec spec) =>
+		string.Equals(spec.FamilyKey, "dell_r440", StringComparison.OrdinalIgnoreCase)
+		|| spec.UsesDellStaticCarrierProfile;
+
 	private static int EnsureVisualRenderers(GameObject visual, ServerVariantSpec spec)
 	{
-		bool forceOpaque = string.Equals(spec.FamilyKey, "dell_r440", StringComparison.OrdinalIgnoreCase)
-			|| spec.UsesDellStaticCarrierProfile;
+		bool forceOpaque = ShouldForceOpaque(spec);
 		int count = 0;
 		LODGroup lodGroup = visual.GetComponent<LODGroup>();
 		foreach (Renderer renderer in visual.GetComponentsInChildren<Renderer>(includeInactive: true))
@@ -1146,7 +1154,10 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 				renderer.enabled = true;
 				renderer.forceRenderingOff = false;
 			}
-			SetMaterialVisible(renderer.sharedMaterial, forceOpaque);
+			foreach (Material material in renderer.sharedMaterials)
+			{
+				SetMaterialVisible(material, forceOpaque);
+			}
 			count++;
 		}
 		if (lodGroup != null)
@@ -1163,6 +1174,9 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 		{
 			return;
 		}
+		int materialId = material.GetInstanceID();
+		if (PreparedVisualMaterials.TryGetValue(materialId, out var prepared)
+			&& prepared.Material == material && (!forceOpaque || prepared.Opaque)) return;
 		material.doubleSidedGI = true;
 		if (material.HasProperty("_Cull"))
 		{
@@ -1202,6 +1216,7 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 				material.SetColor("_BaseColor", color);
 			}
 		}
+		PreparedVisualMaterials[materialId] = (material, forceOpaque);
 	}
 
 	private static string DescribeVisual(GameObject visual, int rendererCount)
@@ -1250,10 +1265,14 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 		private readonly byte[][] _buffers;
 		private readonly Texture2D[] _textures;
 		private readonly Material[] _materials;
+		private readonly int[] _materialAliases;
+		private readonly bool _forceOpaque;
+		private Material? _defaultMaterial;
 		private readonly Dictionary<int, Texture2D?> _images = new Dictionary<int, Texture2D?>();
 
-		private GltfMeshReader(string path)
+		private GltfMeshReader(string path, bool forceOpaque)
 		{
+			_forceOpaque = forceOpaque;
 			using FileStream stream = File.OpenRead(path);
 			(_document, _binaryChunk) = ReadGlb(stream);
 			_root = _document.RootElement;
@@ -1261,7 +1280,7 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 			try
 			{
 				_textures = LoadTextures();
-				_materials = LoadMaterials();
+				_materials = LoadMaterials(out _materialAliases);
 			}
 			catch
 			{
@@ -1270,9 +1289,9 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 			}
 		}
 
-		public static GameObject Load(string path)
+		public static GameObject Load(string path, bool forceOpaque)
 		{
-			var reader = new GltfMeshReader(path);
+			var reader = new GltfMeshReader(path, forceOpaque);
 			try
 			{
 				return reader.BuildScene();
@@ -1342,6 +1361,8 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 		private void BuildMesh(int meshIndex, GameObject nodeObject)
 		{
 			JsonElement gltfMesh = _root.GetProperty("meshes")[meshIndex];
+			var primitives = new List<GltfPrimitive<Vector3, Vector2>>();
+			bool combineEqualMaterialSlots = true;
 			int primitiveIndex = 0;
 			foreach (JsonElement primitive in gltfMesh.GetProperty("primitives").EnumerateArray())
 			{
@@ -1358,27 +1379,48 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 					primitiveIndex++;
 					continue;
 				}
-				GameObject primitiveObject = new GameObject(nodeObject.name + "_Primitive_" + primitiveIndex.ToString(CultureInfo.InvariantCulture));
+				Vector3[] vertices = ReadVec3Accessor(positionAccessor.GetInt32(), invertZ: true);
+				Vector3[]? normals = attributes.TryGetProperty("NORMAL", out JsonElement normalAccessor)
+					? ReadVec3Accessor(normalAccessor.GetInt32(), invertZ: true) : null;
+				Vector2[]? uvs = attributes.TryGetProperty("TEXCOORD_0", out JsonElement uvAccessor)
+					? ReadVec2Accessor(uvAccessor.GetInt32()) : null;
+				int[] indices = primitive.TryGetProperty("indices", out JsonElement indicesAccessor)
+					? ReverseTriangleWinding(ReadIndicesAccessor(indicesAccessor.GetInt32()))
+					: ReverseTriangleWinding(Enumerable.Range(0, vertices.Length).ToArray());
+				int materialIndex = primitive.TryGetProperty("material", out JsonElement materialElement) ? materialElement.GetInt32() : -1;
+				if (materialIndex >= 0 && materialIndex < _materials.Length)
+				{
+					JsonElement sourceMaterial = _root.GetProperty("materials")[materialIndex];
+					if (!_forceOpaque && sourceMaterial.TryGetProperty("alphaMode", out var alphaMode) && alphaMode.GetString() == "BLEND")
+						combineEqualMaterialSlots = false;
+					materialIndex = _materialAliases[materialIndex];
+				}
+				else materialIndex = -1;
+				primitives.Add(new GltfPrimitive<Vector3, Vector2>(vertices, normals, uvs, indices, materialIndex));
+				primitiveIndex++;
+			}
+			var batches = GltfMeshBatcher.Build(primitives, combineEqualMaterialSlots: combineEqualMaterialSlots);
+			int batchIndex = 0;
+			foreach (var batch in batches)
+			{
+				GameObject primitiveObject = new GameObject(nodeObject.name + "_Geometry_" + batchIndex.ToString(CultureInfo.InvariantCulture));
 				primitiveObject.transform.SetParent(nodeObject.transform, worldPositionStays: false);
 				Mesh mesh = new Mesh();
 				mesh.name = primitiveObject.name + "_Mesh";
-				Vector3[] vertices = ReadVec3Accessor(positionAccessor.GetInt32(), invertZ: true);
-				if (vertices.Length > 65535)
+				if (batch.Uses32BitIndices) mesh.indexFormat = IndexFormat.UInt32;
+				mesh.vertices = ToIl2Cpp(batch.Vertices);
+				if (batch.Normals != null) mesh.normals = ToIl2Cpp(batch.Normals);
+				if (batch.Uvs != null) mesh.uv = ToIl2Cpp(batch.Uvs);
+				mesh.subMeshCount = batch.Submeshes.Length;
+				var materials = new Il2CppReferenceArray<Material>(batch.Submeshes.Length);
+				for (int slot = 0; slot < batch.Submeshes.Length; slot++)
 				{
-					mesh.indexFormat = IndexFormat.UInt32;
+					var submesh = batch.Submeshes[slot];
+					mesh.SetTriangles(ToIl2Cpp(submesh.Indices), slot, calculateBounds: false);
+					materials[slot] = submesh.MaterialIndex >= 0 ? _materials[submesh.MaterialIndex] : (_defaultMaterial ??= DefaultMaterial());
 				}
-				mesh.vertices = ToIl2Cpp(vertices);
-				if (attributes.TryGetProperty("NORMAL", out JsonElement normalAccessor))
-				{
-					mesh.normals = ToIl2Cpp(ReadVec3Accessor(normalAccessor.GetInt32(), invertZ: true));
-				}
-				if (attributes.TryGetProperty("TEXCOORD_0", out JsonElement uvAccessor))
-				{
-					mesh.uv = ToIl2Cpp(ReadVec2Accessor(uvAccessor.GetInt32()));
-				}
-				mesh.triangles = primitive.TryGetProperty("indices", out JsonElement indicesAccessor) ? ToIl2Cpp(ReverseTriangleWinding(ReadIndicesAccessor(indicesAccessor.GetInt32()))) : ToIl2Cpp(ReverseTriangleWinding(Enumerable.Range(0, vertices.Length).ToArray()));
 				mesh.RecalculateBounds();
-				if (mesh.normals == null || mesh.normals.Length == 0)
+				if (batch.Normals == null)
 				{
 					mesh.RecalculateNormals();
 				}
@@ -1388,21 +1430,34 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 				MeshFilter meshFilter = primitiveObject.AddComponent<MeshFilter>();
 				meshFilter.sharedMesh = mesh;
 				MeshRenderer meshRenderer = primitiveObject.AddComponent<MeshRenderer>();
-				int materialIndex = primitive.TryGetProperty("material", out JsonElement materialElement) ? materialElement.GetInt32() : -1;
-				meshRenderer.sharedMaterial = materialIndex >= 0 && materialIndex < _materials.Length ? _materials[materialIndex] : DefaultMaterial();
-				primitiveIndex++;
+				meshRenderer.sharedMaterials = materials;
+				batchIndex++;
 			}
+			Log.Info("Batched glTF mesh '" + nodeObject.name + "': primitives=" + primitives.Count.ToString(CultureInfo.InvariantCulture)
+				+ ", renderers=" + batches.Count.ToString(CultureInfo.InvariantCulture) + ". Geometry and material settings were retained.");
 		}
 
-		private Material[] LoadMaterials()
+		private Material[] LoadMaterials(out int[] aliases)
 		{
 			if (!_root.TryGetProperty("materials", out JsonElement materialsElement))
 			{
+				aliases = Array.Empty<int>();
 				return Array.Empty<Material>();
 			}
+			aliases = new int[materialsElement.GetArrayLength()];
 			List<Material> materials = new List<Material>();
+			var knownMaterials = new Dictionary<string, int>(StringComparer.Ordinal);
 			foreach (JsonElement materialElement in materialsElement.EnumerateArray())
 			{
+				string identity = GltfMaterialIdentity.Build(materialElement);
+				if (knownMaterials.TryGetValue(identity, out int knownIndex))
+				{
+					aliases[materials.Count] = knownIndex;
+					materials.Add(materials[knownIndex]);
+					continue;
+				}
+				knownMaterials.Add(identity, materials.Count);
+				aliases[materials.Count] = materials.Count;
 				Material material = CreateCompatibleMaterial("RealServers_Material");
 				if (materialElement.TryGetProperty("name", out JsonElement nameElement))
 				{
@@ -1437,6 +1492,7 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 						}
 					}
 				}
+				SetMaterialVisible(material, _forceOpaque);
 				materials.Add(material);
 			}
 			return materials.ToArray();
@@ -1545,7 +1601,15 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 			{
 				int offset = bytes.Offset + i * bytes.Stride;
 				float z = BitConverter.ToSingle(bytes.Buffer, offset + 8);
-				values[i] = new Vector3(BitConverter.ToSingle(bytes.Buffer, offset), BitConverter.ToSingle(bytes.Buffer, offset + 4), invertZ ? -z : z);
+				// Generated Unity vector constructors call il2cpp_runtime_invoke.
+				// Fill their blittable fields directly: millions of import values
+				// must not cross the native boundary merely to store three floats.
+				values[i] = new Vector3
+				{
+					x = BitConverter.ToSingle(bytes.Buffer, offset),
+					y = BitConverter.ToSingle(bytes.Buffer, offset + 4),
+					z = invertZ ? -z : z
+				};
 			}
 			return values;
 		}
@@ -1564,7 +1628,7 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 				// glTF's UV origin is the upper-left corner. Unity's loaded texture
 				// samples with the opposite vertical origin.
 				// Flip V once here so front-panel text and drive labels stay upright.
-				values[i] = new Vector2(u, 1f - v);
+				values[i] = new Vector2 { x = u, y = 1f - v };
 			}
 			return values;
 		}
@@ -1719,30 +1783,21 @@ private static void ConfigureOriginalInteractionColliders(GameObject serverObjec
 		private static Il2CppStructArray<Vector3> ToIl2Cpp(Vector3[] values)
 		{
 			Il2CppStructArray<Vector3> array = new Il2CppStructArray<Vector3>(values.Length);
-			for (int i = 0; i < values.Length; i++)
-			{
-				array[i] = values[i];
-			}
+			values.AsSpan().CopyTo(array.AsSpan());
 			return array;
 		}
 
 		private static Il2CppStructArray<Vector2> ToIl2Cpp(Vector2[] values)
 		{
 			Il2CppStructArray<Vector2> array = new Il2CppStructArray<Vector2>(values.Length);
-			for (int i = 0; i < values.Length; i++)
-			{
-				array[i] = values[i];
-			}
+			values.AsSpan().CopyTo(array.AsSpan());
 			return array;
 		}
 
 		private static Il2CppStructArray<int> ToIl2Cpp(int[] values)
 		{
 			Il2CppStructArray<int> array = new Il2CppStructArray<int>(values.Length);
-			for (int i = 0; i < values.Length; i++)
-			{
-				array[i] = values[i];
-			}
+			values.AsSpan().CopyTo(array.AsSpan());
 			return array;
 		}
 

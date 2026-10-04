@@ -80,20 +80,31 @@ namespace UnityEngine
         protected Object() => Registry.Add(this);
         public int GetInstanceID() => _id;
         public T? TryCast<T>() where T : class => this as T;
-        public static T[] FindObjectsOfType<T>() where T : Object => Registry.OfType<T>().ToArray();
+        public static int GlobalDiscoveryCalls;
+        public static Exception? DiscoveryFailure;
+        public static T[] FindObjectsOfType<T>() where T : Object
+        {
+            GlobalDiscoveryCalls++;
+            if (DiscoveryFailure != null) throw DiscoveryFailure;
+            return Registry.OfType<T>().ToArray();
+        }
         public static void ResetRegistry() => Registry.Clear();
         public static implicit operator bool(Object? value) => value is not null;
     }
     public sealed class GameObject : Object
     {
         private readonly List<Component> _components = new();
+        public static int ColliderDiscoveryCalls;
         public GameObject() { transform = new Transform(); Attach(transform); }
         public Transform transform { get; }
         private void Attach(Component component) { component.gameObject = this; _components.Add(component); }
         public T AddComponent<T>() where T : Component, new() { var result = new T(); Attach(result); return result; }
         public T? GetComponent<T>() where T : Component => _components.OfType<T>().FirstOrDefault();
-        public T[] GetComponentsInChildren<T>(bool includeInactive = false) where T : Component =>
-            _components.OfType<T>().Concat(transform.Children.SelectMany(child => child.gameObject.GetComponentsInChildren<T>(includeInactive))).ToArray();
+        public T[] GetComponentsInChildren<T>(bool includeInactive = false) where T : Component
+        {
+            if (typeof(T) == typeof(Collider)) ColliderDiscoveryCalls++;
+            return _components.OfType<T>().Concat(transform.Children.SelectMany(child => child.gameObject.GetComponentsInChildren<T>(includeInactive))).ToArray();
+        }
     }
     public class Component : Object
     {
@@ -104,6 +115,7 @@ namespace UnityEngine
     }
     public sealed class Transform : Component
     {
+        public static int GeometryCalls;
         public Vector3 position;
         public float YawDegrees;
         public Transform? parent { get; private set; }
@@ -118,6 +130,7 @@ namespace UnityEngine
         }
         public Vector3 InverseTransformPoint(Vector3 point)
         {
+            GeometryCalls++;
             var difference = point - position;
             var angle = -YawDegrees * MathF.PI / 180f;
             return new Vector3(MathF.Cos(angle) * difference.x + MathF.Sin(angle) * difference.z,

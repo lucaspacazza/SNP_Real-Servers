@@ -1,4 +1,5 @@
 using DataCenterAutomatorServers;
+using System.Text.Json;
 
 if (args.Contains("--benchmark")) return PersistenceBenchmarks.Run(args.Contains("--assert-budget"));
 
@@ -27,9 +28,58 @@ string Save(string root, string name, string content = "revision-one")
 }
 ServerIdentityRecord R(string id = "Server.Green1_-42", string loose = "cargo-42", int rack = 125, string variant = "dell_r440") => new(id, loose, rack, variant);
 string Snapshot(string root) => Directory.GetFiles(Path.Combine(root, "UserData", "RealServers", "SaveIdentities"), "*.json").Single();
+void RewriteSnapshotSchema(string path, int schema, params ServerIdentityRecord[] records)
+{
+    var snapshot = JsonSerializer.Deserialize<ServerIdentitySnapshot>(File.ReadAllText(path))!;
+    snapshot.SchemaVersion = schema;
+    if (records.Length != 0) snapshot.Records = records.ToList();
+    File.WriteAllText(path, JsonSerializer.Serialize(snapshot));
+}
+void PrefixUtf8Bom(string path)
+{
+    byte[] bytes = File.ReadAllBytes(path);
+    File.WriteAllBytes(path, new byte[] { 0xef, 0xbb, 0xbf }.Concat(bytes).ToArray());
+}
+void AssertSnapshotIdentities(ServerIdentityStore store, params ServerIdentityRecord[] records)
+{
+    Equal(true, store.HasSnapshot);
+    Equal(records.Length, store.Records.Count);
+    Equal(true, new HashSet<ServerIdentityRecord>(records).SetEquals(store.Records));
+    foreach (var record in records) {
+        Equal(record.VariantId, store.GetByServerId(record.ServerId));
+        Equal(record.VariantId, store.GetByLooseId(record.LooseId));
+        Equal(record, store.FindSaved(record.ServerId, record.LooseId));
+    }
+}
 
 try
 {
+    Test("UTF-8 BOM primary restores exact models and mounted or loose rack metadata", () => {
+        string root = Temp(), file = Save(root, "A"), directory = Path.Combine(root, "identities");
+        var records = new[] { R(), R("Server.Green2_-90", "cart-90", -1, "dell_xe8640") };
+        new ServerIdentityStore(directory).CommitSnapshot("A", file, records);
+        PrefixUtf8Bom(Directory.GetFiles(directory, "*.json").Single());
+        var reloaded = new ServerIdentityStore(directory); reloaded.SelectSave("A", file);
+        AssertSnapshotIdentities(reloaded, records);
+    });
+    Test("UTF-8 BOM backup restores exact identities after a truncated primary", () => {
+        string root = Temp(), file = Save(root, "A"), directory = Path.Combine(root, "identities");
+        var records = new[] { R(), R("Server.Green2_-90", "cart-90", -1, "dell_xe8640") };
+        var store = new ServerIdentityStore(directory);
+        store.CommitSnapshot("A", file, records); store.CommitSnapshot("A", file, records);
+        string primary = Directory.GetFiles(directory, "*.json").Single();
+        PrefixUtf8Bom(primary + ".bak"); File.WriteAllText(primary, "{truncated");
+        var reloaded = new ServerIdentityStore(directory); reloaded.SelectSave("A", file);
+        AssertSnapshotIdentities(reloaded, records);
+    });
+    Test("UTF-8 BOM content candidate restores models and rack metadata for renamed save", () => {
+        string root = Temp(), file = Save(root, "A"), copy = Save(root, "Renamed"), directory = Path.Combine(root, "identities");
+        var records = new[] { R(), R("Server.Green2_-90", "cart-90", -1, "dell_xe8640") };
+        new ServerIdentityStore(directory).CommitSnapshot("A", file, records);
+        PrefixUtf8Bom(Directory.GetFiles(directory, "*.json").Single());
+        var reloaded = new ServerIdentityStore(directory); reloaded.SelectSave("Renamed", copy);
+        AssertSnapshotIdentities(reloaded, records);
+    });
     Test("Record identity survives exact server ID and loose ID roundtrip", () => {
         string root = Temp(), file = Save(root, "A");
         var registry = new RuntimeVariantRegistry(root); registry.SelectSave("A", file);
@@ -201,7 +251,7 @@ try
     });
     Test("Saved rack state resolves exact rack and physical loose identities", () => {
         string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
-        registry.CommitSnapshot("A", file, new[] { R(), R("Server.Green2_-90", "cart-90", 0, "dell_xe8640") });
+        registry.CommitSnapshot("A", file, new[] { R(), R("Server.Green2_-90", "cart-90", -1, "dell_xe8640") });
         registry.SelectSave("A", file);
         Equal<int?>(125, registry.GetSavedRackPositionUid("Server.Green1_-42", ""));
         Equal<int?>(-1, registry.GetSavedRackPositionUid("Server.Green2_-90", "cart-90"));
@@ -209,7 +259,7 @@ try
     });
     Test("Transient native load changes cannot rewrite the saved rack contract", () => {
         string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
-        registry.CommitSnapshot("A", file, new[] { R("Server.Green1_-42", "cart-42", 0) }); registry.SelectSave("A", file);
+        registry.CommitSnapshot("A", file, new[] { R("Server.Green1_-42", "cart-42", -1) }); registry.SelectSave("A", file);
         registry.RecordIdentity("Server.Green1_-42", "cart-42", 999, r440); registry.Set("Server.Green1_-42", r440);
         Equal<int?>(-1, registry.GetSavedRackPositionUid("Server.Green1_-42", "cart-42"));
     });
@@ -217,6 +267,94 @@ try
         var registry = new RuntimeVariantRegistry(Temp()); registry.Set("Server.Green1_-42", r440);
         Equal<int?>(null, registry.GetSavedRackPositionUid("Server.Green1_-42", ""));
         registry.SelectSave("", ""); Equal<int?>(null, registry.GetSavedRackPositionUid("Server.Green1_-42", ""));
+    });
+    Test("Schema 1 zero keeps exact identity but does not clear a native rack reservation", () => {
+        string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
+        registry.CommitSnapshot("A", file, new[] { R(rack: 0) });
+        RewriteSnapshotSchema(Snapshot(root), 1);
+        registry.SelectSave("A", file);
+        Equal("dell_r440", registry.Get("Server.Green1_-42")?.VariantId);
+        Equal<int?>(null, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+    });
+    Test("Schema 1 nonpositive values cannot become explicit loose assertions", () => {
+        string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
+        registry.CommitSnapshot("A", file, new[] { R() });
+        RewriteSnapshotSchema(Snapshot(root), 1, R(rack: -1));
+        registry.SelectSave("A", file);
+        Equal("dell_r440", registry.GetByLooseId("cargo-42")?.VariantId);
+        Equal<int?>(null, registry.GetSavedRackPositionUid("", "cargo-42"));
+    });
+    Test("Schema 2 explicit loose marker survives serialization as minus one", () => {
+        string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
+        registry.CommitSnapshot("A", file, new[] { R(rack: -1) });
+        var snapshot = JsonSerializer.Deserialize<ServerIdentitySnapshot>(File.ReadAllText(Snapshot(root)))!;
+        Equal(2, snapshot.SchemaVersion); Equal(-1, snapshot.Records.Single().RackPositionUid);
+        registry.SelectSave("A", file);
+        Equal<int?>(-1, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+    });
+    Test("Schema 2 unknown zero is distinct from an explicit loose object", () => {
+        string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
+        registry.CommitSnapshot("A", file, new[] { R(rack: 0) });
+        RewriteSnapshotSchema(Snapshot(root), 2);
+        registry.SelectSave("A", file);
+        Equal("dell_r440", registry.GetByLooseId("cargo-42")?.VariantId);
+        Equal<int?>(null, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+    });
+    Test("Schema 1 and schema 2 mounted positions retain exact native UIDs", () => {
+        foreach (int schema in new[] { 1, 2 }) {
+            string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
+            registry.CommitSnapshot("A", file, new[] { R(rack: 125) });
+            RewriteSnapshotSchema(Snapshot(root), schema);
+            registry.SelectSave("A", file);
+            Equal<int?>(125, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+        }
+    });
+    Test("Copied bytes with schema 1 unknown versus schema 2 loose state stay ambiguous", () => {
+        string root = Temp(), a = Save(root, "A"), b = Save(root, "B"), copy = Save(root, "Copy");
+        var registry = new RuntimeVariantRegistry(root);
+        registry.CommitSnapshot("A", a, new[] { R(rack: 0) }); string aSnapshot = Snapshot(root);
+        RewriteSnapshotSchema(aSnapshot, 1);
+        registry.CommitSnapshot("B", b, new[] { R(rack: -1) });
+        string bSnapshot = Directory.GetFiles(Path.GetDirectoryName(aSnapshot)!, "*.json").Single(p => p != aSnapshot);
+        RewriteSnapshotSchema(bSnapshot, 2, R(rack: -1));
+        registry.SelectSave("Copy", copy);
+        Equal<ServerVariantSpec?>(null, registry.GetByLooseId("cargo-42"));
+        Equal<int?>(null, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+    });
+    Test("Unsupported snapshot schemas cannot claim exact identities or rack state", () => {
+        string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
+        registry.CommitSnapshot("A", file, new[] { R() });
+        RewriteSnapshotSchema(Snapshot(root), 99);
+        registry.SelectSave("A", file);
+        Equal<ServerVariantSpec?>(null, registry.GetByLooseId("cargo-42"));
+        Equal<int?>(null, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+    });
+    Test("Invalid negative rack values remain unknown instead of asserting loose state", () => {
+        string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
+        registry.CommitSnapshot("A", file, new[] { R(rack: -9) });
+        registry.SelectSave("A", file);
+        Equal("dell_r440", registry.GetByLooseId("cargo-42")?.VariantId);
+        Equal<int?>(null, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+    });
+    Test("Null metadata records cannot discard valid schema 1 or schema 2 identities", () => {
+        foreach (int schema in new[] { 1, 2 }) {
+            string root = Temp(), file = Save(root, "A"); var registry = new RuntimeVariantRegistry(root);
+            registry.CommitSnapshot("A", file, new[] { R() });
+            RewriteSnapshotSchema(Snapshot(root), schema, null!, R());
+            registry.SelectSave("A", file);
+            Equal("dell_r440", registry.GetByLooseId("cargo-42")?.VariantId);
+            Equal<int?>(125, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
+        }
+    });
+    Test("Identical mounted mappings across schema versions stay recoverable for copied bytes", () => {
+        string root = Temp(), a = Save(root, "A"), b = Save(root, "B"), copy = Save(root, "Copy");
+        var registry = new RuntimeVariantRegistry(root);
+        registry.CommitSnapshot("A", a, new[] { R() }); string aSnapshot = Snapshot(root);
+        RewriteSnapshotSchema(aSnapshot, 1);
+        registry.CommitSnapshot("B", b, new[] { R() });
+        registry.SelectSave("Copy", copy);
+        Equal("dell_r440", registry.GetByLooseId("cargo-42")?.VariantId);
+        Equal<int?>(125, registry.GetSavedRackPositionUid("Server.Green1_-42", "cargo-42"));
     });
     Test("New worlds and shared-byte loads suppress global legacy identities", () => {
         string root = Temp(), dir = Path.Combine(root, "UserData", "BackplaneBoostServers"); Directory.CreateDirectory(dir);

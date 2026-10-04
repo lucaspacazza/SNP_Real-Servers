@@ -87,12 +87,14 @@ namespace UnityEngine
 
     public sealed class Collider : Component
     {
+        public static int AttachedBodyReads;
         public bool enabled = true;
         public bool isTrigger;
         public Rigidbody? attachedRigidbody
         {
             get
             {
+                AttachedBodyReads++;
                 for (Transform? node = transform; node is not null; node = node.parent)
                     if (node.gameObject.GetComponent<Rigidbody>() is { } body) return body;
                 return null;

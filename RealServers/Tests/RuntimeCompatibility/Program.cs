@@ -233,6 +233,101 @@ internal static class Program
             Assert(Called("TryRefreshShopItemText").Contains("HideUnavailableShopItem") && Called("TryRegisterShopUiVariants").Contains("HideUnavailableShopItem"), "Shop lifecycle can reactivate unavailable offers.");
             Assert(!Called("HideUnavailableShopItem").Contains("ConfigureServer") && !Called("HideUnavailableShopItem").Contains("Destroy"), "Shop cleanup mutates physical inventory.");
         });
+        Run("Lifecycle hooks avoid a second full model and port rebuild", () =>
+        {
+            var patches = Mod.GetType("DataCenterAutomatorServers.PatchRegistry", true)!;
+            var calls = CalledBy(patches, "ServerLifecycleRepairPostfix");
+            Assert(!calls.Contains("TryRepairKnownPersistedServerFromPatch"), "Every pickup/startup still rebuilds the entire custom model and ports after the lightweight callback.");
+            Assert(calls.Contains("TryConfigurePowerControlsFromPatch") && calls.Contains("TryConfigurePendingLifecycleServerFromPatch") && calls.Contains("TryPersistKnownServerIdentityFromPatch"), "Removing duplicate repairs also removed required control or identity callbacks.");
+        });
+        Run("Native save events use the active-transaction snapshot guard", () =>
+        {
+            var entry = Mod.GetType("DataCenterAutomatorServers.DataCenterAutomatorServersMod", true)!;
+            var callbacks = entry.GetMethods(BindingFlags.NonPublic | BindingFlags.Instance).Where(method => method.Name.Contains("<SubscribeSaveEvents>"));
+            var calls = callbacks.SelectMany(method => CalledBy(entry, method.Name)).ToArray();
+            Assert(calls.Contains("CaptureOutsideTransaction"), "The native event still captures the entire datacenter again during an active save.");
+            Assert(!calls.Contains("CapturePersistenceSnapshot"), "The event bypasses the transaction guard.");
+        });
+        Run("Resource discovery restores a Server wrapper before reading native save fields", () =>
+        {
+            var actual = new FakeServer { ServerID = "Server.Green1_-42", rackPositionUID = 73 };
+            var wrapper = new FakeNativeWrapper(actual);
+            object? restored = Call(null, "CastResourceObject", wrapper, typeof(FakeServer));
+            Assert(ReferenceEquals(actual, restored), "Base Unity wrapper was not converted to its requested Server type.");
+            Assert(((FakeServer)restored!).ServerID == "Server.Green1_-42" && ((FakeServer)restored).rackPositionUID == 73,
+                "Typed resource lost the exact persisted native identity/rack UID.");
+            Assert(wrapper.CastCount == 1, "A resource needs exactly one native cast, independent of cache state.");
+        });
+        Run("Resource discovery never returns an unrelated wrapper as its requested type", () =>
+        {
+            var wrapper = new FakeNativeWrapper(new FakeRackPosition { rackPosGlobalUID = 73 });
+            Assert(Call(null, "CastResourceObject", wrapper, typeof(FakeServer)) == null, "A wrong resource type was retained as a Server.");
+            Assert(Call(null, "CastResourceObject", null, typeof(FakeServer)) == null, "Null Unity resource was retained.");
+            Assert(Call(null, "CastResourceObject", wrapper, null) == null, "Absent requested type cannot discover arbitrary resources.");
+        });
+        Run("Already typed resources retain their instance and rack results cast to RackPosition", () =>
+        {
+            var server = new FakeServer { ServerID = "Server.Green1_-42" };
+            Assert(ReferenceEquals(server, Call(null, "CastResourceObject", server, typeof(FakeServer))), "A typed resource was unnecessarily recreated.");
+            var rack = new FakeRackPosition { rackPosGlobalUID = 42 };
+            Assert(ReferenceEquals(rack, Call(null, "CastResourceObject", new FakeNativeWrapper(rack), typeof(FakeRackPosition))), "RackPosition indexing still reads an untyped Unity wrapper.");
+        });
+        Run("One thousand uncached resources each produce one exact typed result", () =>
+        {
+            int casts = 0, found = 0;
+            for (int index = 0; index < 1_000; index++)
+            {
+                var server = new FakeServer { ServerID = "Server.Green1_" + index, rackPositionUID = index + 1 };
+                var wrapper = new FakeNativeWrapper(server);
+                Assert(ReferenceEquals(server, Call(null, "CastResourceObject", wrapper, typeof(FakeServer))), "Uncached wrapper disappeared from the snapshot.");
+                casts += wrapper.CastCount; found++;
+            }
+            Assert(casts == 1_000 && found == 1_000, "Discovery repeated casts or skipped uncached resources.");
+        });
+        Run("Direct Unity resource enumeration actually applies the requested cast", () =>
+        {
+            var iterator = Injector.GetNestedTypes(BindingFlags.NonPublic).Single(type => type.Name.StartsWith("<FindUnityObjectsOfTypeAllDirect>"));
+            Assert(CalledBy(iterator, "MoveNext").Contains("CastResourceObject"), "The game resource iterator still yields base Unity.Object wrappers directly.");
+        });
+        Run("A known saved identity without a custom visual still requires its first physical setup", () =>
+        {
+            var server = new FakeServer { ServerID = "Server.Green1_-42", maxProcessingSpeed = .20f };
+            var known = new HashSet<object> { server };
+            var prepared = new HashSet<object>();
+            Assert(known.Contains(server) && !(bool)Call(null, "IsPhysicalServerPreparedIn", prepared, server)!, "Identity-known stock visual incorrectly skips its first model/form-factor restoration.");
+            Call(null, "MarkPhysicalServerPreparedIn", prepared, server);
+            Assert((bool)Call(null, "IsPhysicalServerPreparedIn", prepared, server)!, "Completed physical setup was not remembered for subsequent startup callbacks.");
+            prepared.Clear();
+            Assert(!(bool)Call(null, "IsPhysicalServerPreparedIn", prepared, server)!, "Preparation leaked from the preceding scene into newly loaded servers.");
+            Assert(Fields("ResetRuntimeAttemptState").Contains("_preparedPhysicalServers"), "Scene/load reset retains physical readiness from the previous world.");
+        });
+        Run("Saved insertion and native startup check physical readiness independently of identity", () =>
+        {
+            foreach (string method in new[] { "TryFinalizeInsertedServer", "TryConfigurePendingLifecycleServer" })
+                Assert(Called(method).Contains("IsPhysicalServerPrepared"), method + " still treats identity knowledge as completed physical setup.");
+            Assert(Fields("IsPhysicalServerPrepared").Contains("_preparedPhysicalServers") && !Fields("IsPhysicalServerPrepared").Contains("_knownModdedServers"), "Preparation guard still uses an identity-only marker.");
+            Assert(Called("TryFinalizeInsertedServer").Contains("ConfigureServerAndPorts"), "An unprepared saved server cannot receive its first full restoration.");
+            var calls = Called("ConfigureServerAndPorts");
+            Assert(Array.IndexOf(calls, "MarkPhysicalServerPrepared") > Array.IndexOf(calls, "ConfigureServerLiveControls"), "Physical readiness is published before visual/port setup finishes.");
+        });
+        Run("Saved server identity is captured before native ID remapping", () =>
+        {
+            var patches=Mod.GetType("DataCenterAutomatorServers.PatchRegistry",true)!;
+            var method=patches.GetMethod("ServerInsertedPrefix",BindingFlags.Public|BindingFlags.Static);
+            Assert(method!=null,"Native insertion has no pre-remap saved identity hook.");
+            Assert(CalledBy(patches,"ServerInsertedPrefix").Contains("TryPrepareLoadedServerIdentityFromPatch"),"The authoritative serialized ID is not captured before native insertion.");
+            Assert(Called("RecoverLoadedServerVariantIdentity").Contains("ReadSavedSourceServerId"),"Reload still relies solely on the live ID after native remapping.");
+        });
+        Run("Native snapshot publishes the explicit manual rack reservation", () =>
+        {
+            Assert(Called("CapturePersistenceSnapshot").Contains("PrepareNativeSnapshotRackUid"),"The selected manual rack is omitted from native save preparation.");
+            Assert(Called("PrepareNativeSnapshotRackUid").Contains("TryEnsureNativeRackPositionUid"),"Snapshotting accepts an unregistered native slot.");
+        });
+        Run("Legacy repair is limited to owned unknown records and exact poses", () =>
+        {
+            Assert(Called("TrackLoadedServerRackState").Contains("HasUnknownSavedRackLocation"),"Explicitly loose snapshots can be captured as mounted legacy servers.");
+            Assert(Called("RepairLegacyExactRackMounts").Contains("FindUnique"),"Legacy migration guesses a nearby rack instead of requiring a unique saved pose.");
+        });
         Console.WriteLine($"{_passed} passed, {_failed} failed.");
         return _failed == 0 ? 0 : 1;
     }
@@ -250,9 +345,12 @@ internal static class Program
         .Select(token => Injector.Module.ResolveMethod(token)!.Name).ToArray();
     private static string[] Fields(string name) => Operands(name, OperandType.InlineField)
         .Select(token => Injector.Module.ResolveField(token)!.Name).ToArray();
-    private static IEnumerable<int> Operands(string name, OperandType desired)
+    private static string[] CalledBy(Type type, string name) => Operands(type, name, OperandType.InlineMethod)
+        .Select(token => type.Module.ResolveMethod(token)!.Name).ToArray();
+    private static IEnumerable<int> Operands(string name, OperandType desired) => Operands(Injector, name, desired);
+    private static IEnumerable<int> Operands(Type type, string name, OperandType desired)
     {
-        var method = Injector.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)!;
+        var method = type.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)!;
         var bytes = method.GetMethodBody()!.GetILAsByteArray()!;
         var opcodes = typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static).Where(f => f.FieldType == typeof(OpCode))
             .Select(f => (OpCode)f.GetValue(null)!).ToDictionary(value => value.Value);
@@ -307,6 +405,14 @@ internal static class Program
         public void PowerButton(bool forceState) { NativePowerCalls++; IpDuplicateChecks++; isOn = forceState || !isOn; }
     }
     public sealed class FakeShopPayload { public int itemID, price; public string itemName = ""; }
+    public sealed class FakeRackPosition { public int rackPosGlobalUID; }
+    public sealed class FakeNativeWrapper
+    {
+        private readonly object _native;
+        internal int CastCount;
+        internal FakeNativeWrapper(object native) => _native = native;
+        public T? TryCast<T>() where T : class { CastCount++; return _native as T; }
+    }
     public sealed class FakeShopCard
     {
         public string itemDisplayName = "", guid = "", name = "";

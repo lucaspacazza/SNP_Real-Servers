@@ -5,6 +5,8 @@ namespace InfiniteTrolley.Runtime;
 
 internal sealed class CargoPhysics
 {
+    private sealed record ChassisState(TrolleyLoadingBay Bay, Rigidbody Body, Transform Root, Collider[] Colliders);
+
     private sealed class BodyState
     {
         internal readonly UsableObject Item;
@@ -23,6 +25,30 @@ internal sealed class CargoPhysics
     }
 
     private readonly Dictionary<int, BodyState> _items = new();
+    private readonly Dictionary<int, ChassisState> _chassis = new();
+
+    internal void InvalidateChassis(TrolleyLoadingBay bay)
+    {
+        if (bay != null)
+            _chassis.Remove(bay.GetInstanceID());
+    }
+
+    private Collider[] ChassisColliders(TrolleyLoadingBay bay, Rigidbody body)
+    {
+        var id = bay.GetInstanceID();
+        var root = bay.transform.root;
+        if (_chassis.TryGetValue(id, out var cached) && cached.Bay != null &&
+            cached.Body == body && cached.Root == root)
+            return cached.Colliders;
+
+        var colliders = new List<Collider>();
+        foreach (var collider in root.GetComponentsInChildren<Collider>(true))
+            if (collider != null && !collider.isTrigger && collider.attachedRigidbody == body)
+                colliders.Add(collider);
+        var result = colliders.ToArray();
+        _chassis[id] = new ChassisState(bay, body, root, result);
+        return result;
+    }
 
     internal bool Contains(UsableObject item) => item != null && _items.ContainsKey(item.GetInstanceID());
 
@@ -70,7 +96,10 @@ internal sealed class CargoPhysics
         if (chassisBody == null)
             return;
 
-        var chassis = bay.transform.root.GetComponentsInChildren<Collider>(true);
+        // Native collider reactivation explicitly invalidates this cache. Its
+        // contents exclude cargo bodies, so N cargo objects do not each walk
+        // the complete hierarchy containing those same N objects.
+        var chassis = ChassisColliders(bay, chassisBody);
         foreach (var cargoCollider in item.GetComponentsInChildren<Collider>(true))
         {
             if (cargoCollider == null || cargoCollider.isTrigger)
@@ -81,9 +110,9 @@ internal sealed class CargoPhysics
                     continue;
 
                 var key = (cargoCollider.GetInstanceID(), chassisCollider.GetInstanceID());
-                state.Pairs.TryAdd(key, (cargoCollider, chassisCollider,
-                    !Physics.GetIgnoreCollision(cargoCollider, chassisCollider)));
-                if (!Physics.GetIgnoreCollision(cargoCollider, chassisCollider))
+                var ignored = Physics.GetIgnoreCollision(cargoCollider, chassisCollider);
+                state.Pairs.TryAdd(key, (cargoCollider, chassisCollider, !ignored));
+                if (!ignored)
                 {
                     Physics.IgnoreCollision(cargoCollider, chassisCollider, true);
                 }
@@ -114,6 +143,7 @@ internal sealed class CargoPhysics
         foreach (var state in _items.Values)
             Restore(state);
         _items.Clear();
+        _chassis.Clear();
     }
 
     private static void Restore(BodyState state, bool restoreBody = true)

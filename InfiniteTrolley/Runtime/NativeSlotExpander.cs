@@ -19,9 +19,9 @@ internal static class NativeSlotExpander
             if (oldPositions[i] == null)
                 return false;
 
-        var occupied = new int[Math.Max(oldPositions.Length, oldUsed.Length)];
-        for (var i = 0; i < oldUsed.Length; i++)
-            occupied[i] = oldUsed[i];
+        // The native array can be read directly. Hover calls this repeatedly;
+        // copying every reservation into a managed array creates avoidable GC.
+        var occupied = new NativeReservations(oldUsed, Math.Max(oldPositions.Length, oldUsed.Length));
         var length = SlotCapacity.RequiredLength(occupied, incomingUnits);
         if (oldPositions.Length == length && oldUsed.Length == length)
             return true;
@@ -31,7 +31,7 @@ internal static class NativeSlotExpander
         for (var i = 0; i < length; i++)
         {
             positions[i] = oldPositions[SlotCapacity.VisualIndex(i, oldPositions.Length)];
-            if (i < occupied.Length)
+            if (i < occupied.Count)
                 used[i] = occupied[i];
         }
 
@@ -40,5 +40,22 @@ internal static class NativeSlotExpander
         bay.positionsOnTrolley = positions;
         bay.usedPositions = used;
         return true;
+    }
+
+    private sealed class NativeReservations : IReadOnlyList<int>
+    {
+        private readonly Il2CppStructArray<int> _items;
+        internal NativeReservations(Il2CppStructArray<int> items, int length)
+        {
+            _items = items;
+            Count = length;
+        }
+        public int Count { get; }
+        public int this[int index] => index < _items.Length ? _items[index] : 0;
+        public IEnumerator<int> GetEnumerator()
+        {
+            for (var index = 0; index < Count; index++) yield return this[index];
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }

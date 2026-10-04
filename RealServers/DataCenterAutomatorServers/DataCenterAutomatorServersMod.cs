@@ -58,7 +58,7 @@ public sealed class DataCenterAutomatorServersMod : MelonMod
 	{
 		_savingHandler = (Action)(() =>
 		{
-			try { _injector?.CapturePersistenceSnapshot(); }
+			try { _saveLifecycle?.CaptureOutsideTransaction(); }
 			catch (Exception error) { Log.Error("Could not capture exact server identities before native saving.", error); }
 		});
 		_loadedHandler = (Action)(() =>
@@ -446,6 +446,13 @@ public sealed class DataCenterAutomatorServersMod : MelonMod
 		{
 			Log.Error("Patch-triggered loaded cable finalization failed from " + source + ".", exception);
 		}
+	}
+
+	internal static void TryPrepareLoadedServerIdentityFromPatch(object? instance, object? serverSaveData)
+	{
+		if (instance == null || serverSaveData == null) return;
+		try { ModHolder.Instance?._injector?.PrepareLoadedServerIdentity(instance, serverSaveData); }
+		catch (Exception error) { Log.Error("Could not prepare the authoritative saved server identity.", error); }
 	}
 
 	internal static void TryRestoreLoadedServerRackFromPatch(string source, object? instance, object? serverSaveData)

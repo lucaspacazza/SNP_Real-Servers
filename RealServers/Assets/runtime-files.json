@@ -10,6 +10,7 @@
     "Assets/Manufacturers/Dell/PowerEdge_R760/Models/PowerEdge_R760_static_game_ready.lod.glb",
     "Assets/Manufacturers/Lenovo/ThinkSystem_SR650_V3/Models/lenovo_rack_sr250.glb",
     "Assets/Manufacturers/Lenovo/ThinkSystem_SR650_V3/Models/lenovo_rack_sr250.lod.glb",
-    "Assets/Manufacturers/Dell/PowerEdge_R440/icon.png"
+    "Assets/Manufacturers/Dell/PowerEdge_R440/icon.png",
+    "Assets/Manufacturers/Dell/PowerEdge_R760/icon.png"
   ]
 }
