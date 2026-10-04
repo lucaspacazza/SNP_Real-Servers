@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "destinationRelativeRoot": "RealServers",
+  "files": [
+    "Assets/Manufacturers/Dell/PowerEdge_R440_LenovoCarrier/Models/PowerEdge_R440_static_game_ready.glb",
+    "Assets/Manufacturers/Dell/PowerEdge_R440_LenovoCarrier/Models/PowerEdge_R440_static_game_ready.lod.glb",
+    "Assets/Manufacturers/Dell/PowerEdge_XE8640/Models/PowerEdge_XE8640_runtime_compatible.glb",
+    "Assets/Manufacturers/Dell/PowerEdge_XE8640/Models/PowerEdge_XE8640_runtime_compatible.lod.glb",
+    "Assets/Manufacturers/Dell/PowerEdge_R760/Models/PowerEdge_R760_static_game_ready.glb",
+    "Assets/Manufacturers/Dell/PowerEdge_R760/Models/PowerEdge_R760_static_game_ready.lod.glb",
+    "Assets/Manufacturers/Lenovo/ThinkSystem_SR650_V3/Models/lenovo_rack_sr250.glb",
+    "Assets/Manufacturers/Lenovo/ThinkSystem_SR650_V3/Models/lenovo_rack_sr250.lod.glb",
+    "Assets/Manufacturers/Dell/PowerEdge_R440/icon.png"
+  ]
+}

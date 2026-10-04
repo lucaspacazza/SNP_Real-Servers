@@ -1,0 +1,11 @@
+<Project>
+  <Target Name="ValidateLocalGameReferences" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <_LocalGameReference Include="@(Reference)" Condition="$([System.String]::Copy('%(Reference.HintPath)').Contains('MelonLoader'))" />
+    </ItemGroup>
+    <Error Condition="'@(_LocalGameReference)' != '' and '$(GameDir)' == ''"
+           Text="Set GameDir to your Data Center installation with -p:GameDir=... or set SNP_DATACENTER_DIR. Game and loader assemblies are not included in this repository." />
+    <Error Condition="'@(_LocalGameReference)' != '' and !Exists('%(_LocalGameReference.HintPath)')"
+           Text="Missing local assembly: %(_LocalGameReference.HintPath). Install MelonLoader and let it generate the IL2CPP assemblies, then check GameDir." />
+  </Target>
+</Project>

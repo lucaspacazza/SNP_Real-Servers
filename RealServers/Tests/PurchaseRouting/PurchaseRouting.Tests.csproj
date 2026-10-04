@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Properties/NullableAttributes.cs" Link="Production/NullableAttributes.cs" />
+    <Compile Include="../../DataCenterAutomatorServers/ServerVariantSpec.cs" Link="Production/ServerVariantSpec.cs" />
+    <Compile Include="../../DataCenterAutomatorServers/Core/ServerCatalog.cs" Link="Production/ServerCatalog.cs" />
+    <Compile Include="../../DataCenterAutomatorServers/Core/PurchaseRouting*.cs" Link="Production/%(Filename)%(Extension)" />
+    <Compile Include="../../DataCenterAutomatorServers/Manufacturers/**/*.cs" Link="Production/Manufacturers/%(RecursiveDir)%(Filename).cs" />
+    <Reference Include="Assembly-CSharp"><HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath></Reference>
+    <Reference Include="Il2Cppmscorlib"><HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath></Reference>
+    <Reference Include="Il2CppInterop.Runtime"><HintPath>$(GameDir)\MelonLoader\net6\Il2CppInterop.Runtime.dll</HintPath></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\UnityEngine.CoreModule.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

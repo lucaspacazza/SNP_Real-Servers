@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../DataCenterAutomatorServers/Core/SaveFileLocator.cs" Link="SaveFileLocator.cs" Condition="Exists('../../DataCenterAutomatorServers/Core/SaveFileLocator.cs')" />
+    <Compile Include="../../DataCenterAutomatorServers/Core/SaveLifecycleCoordinator.cs" Link="SaveLifecycleCoordinator.cs" Condition="Exists('../../DataCenterAutomatorServers/Core/SaveLifecycleCoordinator.cs')" />
+  </ItemGroup>
+</Project>

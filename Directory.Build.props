@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <GameDir Condition="'$(GameDir)' == '' and '$(SNP_DATACENTER_DIR)' != ''">$(SNP_DATACENTER_DIR)</GameDir>
+    <GameDir Condition="'$(GameDir)' == '' and Exists('$(MSBuildProgramFiles32)\Steam\steamapps\common\Data Center\Data Center.exe')">$(MSBuildProgramFiles32)\Steam\steamapps\common\Data Center</GameDir>
+  </PropertyGroup>
+</Project>
