@@ -55,6 +55,12 @@ internal static class Program
         Run("An out-of-range reservation cannot be partially published", () => True(!ShouldMark(284,new[]{-1,-1},1,3)));
         Run("Negative positions cannot mutate native arrays", () => True(!ShouldMark(284,new[]{-1,-1},-1,1)));
         Run("The exact requested offset is used without claiming adjacent servers", () => True(ShouldMark(284,new[]{285,-1,-1,286},1,2)));
+        Run("Legacy repair accepts one exactly matching saved pose", () => Equal(0,Match(new[]{Pose(1,2,3)},Pose(1,2,3))));
+        Run("Legacy repair does not choose a nearby slot", () => Equal(-1,Match(new[]{Pose(1,2,3)},Pose(1.001f,2,3))));
+        Run("Legacy repair rejects ambiguous identical slot poses", () => Equal(-1,Match(new[]{Pose(1,2,3),Pose(1,2,3)},Pose(1,2,3))));
+        Run("Occupied slots cannot receive a legacy server", () => Equal(-1,Match(new[]{Pose(1,2,3)},Pose(1,2,3),_=>false)));
+        Run("An opposite quaternion sign represents the same saved rotation", () => Equal(0,Match(new[]{Pose(1,2,3)},new[]{1f,2f,3f,0f,0f,0f,-1f})));
+        Run("A different rack orientation cannot match a saved server", () => Equal(-1,Match(new[]{Pose(1,2,3)},new[]{1f,2f,3f,0f,1f,0f,0f})));
         Console.WriteLine($"Rack persistence: {passed} passed; {failed} failed.");
         return failed==0?0:1;
     }
@@ -66,6 +72,13 @@ internal static class Program
     }
     private static int Reserve(Func<int> next,Action<int> write,Func<int,bool> occupied,Action<int> assign,Func<int> verify,int budget=10000)=>(int)Call("Reserve",next,write,occupied,assign,verify,budget)!;
     private static bool ShouldMark(int uid,int[] slots,int index,int units)=>(bool)Call("ShouldMark",uid,slots,index,units)!;
+    private static float[] Pose(float x,float y,float z)=>new[]{x,y,z,0f,0f,0f,1f};
+    private static int Match(float[][] poses,float[] target,Predicate<int>? available=null)
+    {
+        var type=Assembly.GetExecutingAssembly().GetType("DataCenterAutomatorServers.ExactRackPoseIndex") ?? throw new TypeLoadException("Exact legacy pose matching is missing.");
+        var index=Activator.CreateInstance(type,new object[]{poses})!;
+        return (int)type.GetMethod("FindUnique")!.Invoke(index,new object[]{target,available??(_=>true)})!;
+    }
     private static void Run(string name,Action test){try{test();passed++;Console.WriteLine("PASS "+name);}catch(Exception error){failed++;Console.WriteLine("FAIL "+name+": "+error.Message);}}
     private static void True(bool condition){if(!condition)throw new InvalidOperationException("Assertion failed.");}
     private static void Equal<T>(T expected,T actual){if(!EqualityComparer<T>.Default.Equals(expected,actual))throw new InvalidOperationException($"Expected {expected}; got {actual}.");}

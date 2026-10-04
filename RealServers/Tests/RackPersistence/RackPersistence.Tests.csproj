@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../DataCenterAutomatorServers/Core/NativeRackUidAllocator*.cs" Link="Production/%(Filename)%(Extension)" />
+    <Compile Include="../../DataCenterAutomatorServers/Core/ExactRackPoseIndex*.cs" Link="Production/%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>
